@@ -73,7 +73,10 @@ gets the native title bar with traffic lights, window vibrancy behind the sideba
   strikes; offline mode shows a flagged simulated chain.
 - **Markets** — `WEI` world markets (Americas/EMEA/Asia-Pacific indices, futures, Treasuries, FX,
   crypto and commodities with sparklines), `GC` US Treasury yield curve (now vs 1M and 1Y ago,
-  2s10s / 3m10y / 5s30s), **news** (`AAPL CN`; Yahoo headlines, CoinDesk for crypto) and
+  2s10s / 3m10y / 5s30s), `MACRO` US macro indicators (real GDP QoQ annualised, M2 and CPI
+  year-over-year with historical percentiles, ISM manufacturing PMI vs the 50 line plus its ten
+  components; FRED keyless CSV with a 12 h disk cache, ISM from a bundled seed refreshed by
+  `scripts/extract_ism_seed.py`), **news** (`AAPL CN`; Yahoo headlines, CoinDesk for crypto) and
   **order book** depth (`BTCUSD CRNCY OB`; live Binance book, Coinbase fallback; markets without a
   free public book show a clearly marked simulation).
 - **Market data behind a trait** (`tr_data::MarketData`), routed per asset class to free sources:
@@ -349,7 +352,7 @@ Settings › Hotkeys. On Linux and Windows ⌘ is Ctrl and ⌥ is Alt.
 | F1 · F2 · F3 · F4 · F5 · F6 · F12 | help · Congress feed · politicians · alerts · watchlist · refresh filings · frame timing |
 | F7 · F8 · F9 | brokerage portfolio · positions · orders |
 | Tab · ⇧Tab | next · previous pane |
-| ⌘1 … ⌘0 · ⌘⇧O | new chart, watchlist, news, order book, world markets, yield curve, Congress, politicians, alerts, search pane · options chain |
+| ⌘1 … ⌘0 · ⌘⇧O · ⌘⇧E | new chart, watchlist, news, order book, world markets, yield curve, Congress, politicians, alerts, search pane · options chain · macro |
 | ⌘D · ⌘⇧D · ⌘T · ⌘W · ⌘⇧P | split right · split down · new tab · close pane · pop out |
 | ⌘S · ⌥1 … ⌥9 | save layout · switch to saved layout 1–9 |
 | ⌃⌘S (Ctrl+Shift+S) · ⌘⌥S | toggle sidebar · move sidebar to the other side |
@@ -365,7 +368,7 @@ Settings › Hotkeys. On Linux and Windows ⌘ is Ctrl and ⌥ is Alt.
 | `5` `1H` `D` `1W` `1M` · `YTD` `5Y` `ALL` | interval · quick range |
 | `RSI` `MACD` `SMA 200` `BB 20 2.5` · `IND` `IND VOLUME` · `CLEAR` | toggle any of the 151 indicators (optional parameters) · indicator picker · remove all |
 | `CMP MSFT` · `LOG` · `CANDLE` `BAR` `LINE` `AREA` | compare · log scale · chart type |
-| `AAPL OMON` · `AAPL CN` · `BTCUSD CRNCY OB` · `WEI` · `GC` · `SECF <query>` | options · news · order book · world markets · yield curve · search |
+| `AAPL OMON` · `AAPL CN` · `BTCUSD CRNCY OB` · `WEI` · `GC` · `MACRO` · `SECF <query>` | options · news · order book · world markets · yield curve · macro indicators · search |
 | `CONG` · `NVDA CONG` · `POL PELOSI` · `TRACK PELOSI` · `ALERTS` · `REFRESH` | Congress feed · who traded it · profile · track · alerts · refresh |
 | `NEW BOOK` · `SPLIT DOWN NEWS` · `POP` · `LINK GREEN` · `TITLE Desk` · `CLOSE` | add, split, pop out, link, rename, close panes |
 | `LAYOUT 4` · `LAYOUT SAVE Macro` · `LAYOUT Macro` · `LAYOUT RENAME Rates` · `LAYOUT DUP` · `LAYOUT DEL` · `LAYOUT EXPORT` | grid preset · saved layouts |

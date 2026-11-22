@@ -18,6 +18,7 @@ tr-turnkey.workspace = true
 tr-congress.workspace = true
 tr-data.workspace = true
 tr-chart.workspace = true
+tr-macro.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 serde.workspace = true
@@ -34,7 +35,7 @@ web-time = "1"
 qrcode = { version = "0.14", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts"] }
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "links"] }
 tokio.workspace = true
 tracing-subscriber.workspace = true
 

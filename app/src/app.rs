@@ -77,6 +77,8 @@ pub enum PaneKind {
     Help,
     Wei,
     Curve,
+    /// US macro indicators: GDP, M2, CPI, ISM PMI (`MACRO`).
+    Macro(Box<crate::macro_view::MacroPane>),
     Search {
         query: String,
     },
@@ -223,6 +225,7 @@ impl PaneKind {
             PaneKind::Help => "Help".into(),
             PaneKind::Wei => "World Markets".into(),
             PaneKind::Curve => "Yield Curve".into(),
+            PaneKind::Macro(_) => "Macro".into(),
             PaneKind::Search { query } if query.is_empty() => "Search".into(),
             PaneKind::Search { query } => format!("Search: {query}"),
             PaneKind::News(n) => match &n.symbol {
@@ -247,6 +250,7 @@ impl PaneKind {
             PaneKind::Help => "HELP",
             PaneKind::Wei => "WEI",
             PaneKind::Curve => "GC",
+            PaneKind::Macro(_) => "ECST",
             PaneKind::Search { .. } => "SECF",
             PaneKind::News(_) => "CN",
             PaneKind::OrderBook(_) => "OB",
@@ -304,6 +308,7 @@ impl PaneKind {
             PaneKind::Help => PaneSettings::Help,
             PaneKind::Wei => PaneSettings::Wei,
             PaneKind::Curve => PaneSettings::Curve,
+            PaneKind::Macro(m) => PaneSettings::Macro { indicator: m.indicator, range: m.range },
             PaneKind::Search { query } => PaneSettings::Search(query.clone()),
             PaneKind::News(n) => PaneSettings::News(n.symbol.clone()),
             PaneKind::OrderBook(b) => {
@@ -357,6 +362,9 @@ impl PaneKind {
             PaneSettings::Help => PaneKind::Help,
             PaneSettings::Wei => PaneKind::Wei,
             PaneSettings::Curve => PaneKind::Curve,
+            PaneSettings::Macro { indicator, range } => {
+                PaneKind::Macro(Box::new(crate::macro_view::MacroPane { indicator, range }))
+            }
             PaneSettings::Search(q) => PaneKind::Search { query: q },
             PaneSettings::News(s) => PaneKind::News(Box::new(NewsPane::new(s))),
             PaneSettings::OrderBook { symbol, depth, group } => {
@@ -504,6 +512,9 @@ pub struct TerminalApp {
     curves: Option<Box<YieldCurves>>,
     last_wei: Option<Instant>,
     last_curve: Option<Instant>,
+    macro_data: Option<Box<tr_macro::Snapshot>>,
+    last_macro: Option<Instant>,
+    macro_loading: bool,
     wei_updated: Option<String>,
     /// Latest network search results and the query they answer.
     net_hits: (String, Vec<SearchHit>),
@@ -673,6 +684,9 @@ impl TerminalApp {
             curves: None,
             last_wei: None,
             last_curve: None,
+            macro_data: None,
+            last_macro: None,
+            macro_loading: false,
             wei_updated: None,
             net_hits: (String::new(), Vec::new()),
             live_perps: None,
@@ -918,7 +932,9 @@ impl TerminalApp {
                         let id = self.new_pane(kind);
                         self.dock_pane(id, target, crate::dock::Zone::Right);
                     }
-                    None => self.status = format!("Unknown panel {spec:?}; try CHART, NEWS, BOOK, WEI, GC, CONG, WL"),
+                    None => {
+                        self.status = format!("Unknown panel {spec:?}; try CHART, NEWS, BOOK, WEI, GC, MACRO, CONG, WL")
+                    }
                 }
             }
             Function::Split { down, panel } => match self.panel_from_spec(&panel, symbol.as_deref()) {
@@ -987,6 +1003,17 @@ impl TerminalApp {
                 self.worker.send(Request::YieldCurves);
                 self.last_curve = Some(Instant::now());
                 self.open_panel(PaneKind::Curve);
+            }
+            Function::Macro => {
+                self.macro_loading = self.macro_data.is_none();
+                self.worker.send(Request::Macro { force: false });
+                self.last_macro = Some(Instant::now());
+                self.open_panel(PaneKind::Macro(Box::default()));
+            }
+            Function::RefreshMacro => {
+                self.macro_loading = true;
+                self.worker.send(Request::Macro { force: true });
+                self.last_macro = Some(Instant::now());
             }
             Function::Search(q) => {
                 if !q.trim().is_empty() {
@@ -1170,6 +1197,10 @@ impl TerminalApp {
                 }
                 Response::Status(s) => self.status = s,
                 Response::Curves(c) => self.curves = Some(c),
+                Response::Macro(m) => {
+                    self.macro_data = Some(m);
+                    self.macro_loading = false;
+                }
                 Response::SearchHits { query, hits } => self.net_hits = (query, hits),
                 Response::PerpMarkets(result) => {
                     let ok = result.is_ok();
@@ -1470,6 +1501,11 @@ impl TerminalApp {
         {
             self.worker.send(Request::YieldCurves);
             self.last_curve = Some(Instant::now());
+        }
+        // Macro prints move monthly at most; refetch on the crate's TTL while visible.
+        if shown(&|k| matches!(k, PaneKind::Macro(_))) && self.last_macro.is_none_or(|t| t.elapsed() > tr_macro::TTL) {
+            self.worker.send(Request::Macro { force: false });
+            self.last_macro = Some(Instant::now());
         }
         // News every 5 minutes and order books about twice a second, while visible. The Terminal
         // server's books change about every 0.5 s; 400 ms puts a poll on every 500 ms repaint tick.
@@ -1786,6 +1822,7 @@ mod tests {
             PaneSettings::Search("gold".into()),
             PaneSettings::Settings,
             PaneSettings::Wei,
+            PaneSettings::Macro { indicator: tr_macro::Indicator::M2, range: crate::macro_view::MacroRange::Y5 },
         ] {
             assert_eq!(PaneKind::from_settings(s.clone()).settings(), s);
         }

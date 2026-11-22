@@ -311,6 +311,7 @@ pub enum Action {
     NewAlerts,
     NewSearch,
     NewOptions,
+    NewMacro,
     DrawTrendline,
     DrawHorizontal,
     DrawVertical,
@@ -330,7 +331,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 53] = [
+    pub const ALL: [Action; 54] = [
         Action::Help,
         Action::Congress,
         Action::Politicians,
@@ -368,6 +369,7 @@ impl Action {
         Action::NewAlerts,
         Action::NewSearch,
         Action::NewOptions,
+        Action::NewMacro,
         Action::DrawTrendline,
         Action::DrawHorizontal,
         Action::DrawVertical,
@@ -425,6 +427,7 @@ impl Action {
             Action::NewAlerts => "New Alerts pane".into(),
             Action::NewSearch => "New Security search pane".into(),
             Action::NewOptions => "New Options chain pane".into(),
+            Action::NewMacro => "New Macro pane".into(),
 
             Action::DrawTrendline => "Draw trendline".into(),
             Action::DrawHorizontal => "Draw horizontal line".into(),
@@ -484,6 +487,7 @@ impl Action {
             Action::NewAlerts => "ALRT",
             Action::NewSearch => "SECF",
             Action::NewOptions => "OMON",
+            Action::NewMacro => "MACRO",
             _ => return None,
         })
     }
@@ -663,9 +667,14 @@ impl Default for Keymap {
         bind(Action::Magnet, "Alt+M");
         // ⌘1…⌘9, ⌘0 open panels; ⌥1…⌥9 switch saved layouts.
         bind(Action::NewOptions, "Cmd+Shift+O");
+        bind(Action::NewMacro, "Cmd+Shift+E");
         bind(Action::SwapSidebarSide, "Cmd+Alt+S");
         bind(Action::NextTheme, "Cmd+Alt+T");
-        for (i, a) in Action::ALL.iter().filter(|a| a.panel_spec().is_some() && **a != Action::NewOptions).enumerate() {
+        for (i, a) in Action::ALL
+            .iter()
+            .filter(|a| a.panel_spec().is_some() && **a != Action::NewOptions && **a != Action::NewMacro)
+            .enumerate()
+        {
             bind(*a, &format!("Cmd+{}", (i + 1) % 10));
         }
         for (i, a) in Action::ALL.iter().filter(|a| a.layout_slot().is_some()).enumerate() {

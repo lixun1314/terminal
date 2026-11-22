@@ -67,6 +67,7 @@ struct Candle {
 impl Info {
     pub fn new(url: &str, weight_per_min: u32, metrics: Arc<Metrics>) -> Result<Self> {
         let http = reqwest::Client::builder()
+            .tls_backend_rustls()
             .user_agent(concat!("terminal-gateway/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(20))
             .build()?;

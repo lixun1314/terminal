@@ -193,7 +193,7 @@ pub struct CryptoProvider {
 
 impl CryptoProvider {
     pub fn new() -> Result<Self> {
-        let client = reqwest::Client::builder();
+        let client = reqwest::Client::builder().tls_backend_rustls();
         // Browsers set their own User-Agent, and fetch takes its timeout per request.
         #[cfg(not(target_arch = "wasm32"))]
         let client = client.user_agent(concat!("terminal/", env!("CARGO_PKG_VERSION"))).timeout(TIMEOUT);

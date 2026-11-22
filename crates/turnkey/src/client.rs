@@ -84,7 +84,7 @@ impl Client {
 
     /// Any base URL (tests point this at the mock).
     pub fn with_base(base: &str) -> Result<Self> {
-        let b = reqwest::Client::builder();
+        let b = reqwest::Client::builder().tls_backend_rustls();
         #[cfg(not(target_arch = "wasm32"))]
         let b =
             b.user_agent(concat!("terminal/", env!("CARGO_PKG_VERSION"))).redirect(reqwest::redirect::Policy::none());

@@ -141,6 +141,58 @@ pub fn accent_wash() -> Color32 {
     Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), if palette().dark { 70 } else { 45 })
 }
 
+/// WCAG relative luminance (0–1).
+fn luminance(c: Color32) -> f32 {
+    let lin = |v: u8| {
+        let s = v as f32 / 255.0;
+        if s <= 0.03928 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// WCAG contrast ratio (1–21); 4.5 is the floor for small text.
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    let (x, y) = (luminance(a), luminance(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// Axis tick labels (prices, dates, indicator values): halfway between `muted` and `text`,
+/// so they stay legible on light and dark cards alike instead of washing out. Custom
+/// themes can wash out both ends, so fall back until the ticks clear the contrast floor.
+pub fn axis_text() -> Color32 {
+    let p = palette();
+    let mix = |a: u8, b: u8| ((a as u16 + b as u16) / 2) as u8;
+    let label = Color32::from_rgba_unmultiplied(
+        mix(p.muted.r(), p.text.r()),
+        mix(p.muted.g(), p.text.g()),
+        mix(p.muted.b(), p.text.b()),
+        mix(p.muted.a(), p.text.a()),
+    );
+    if contrast(label, p.card) >= 4.5 {
+        label
+    } else if contrast(p.text, p.card) >= 4.5 {
+        p.text
+    } else {
+        ink_on(p.card)
+    }
+}
+
+/// Crosshair price/date tags: chip fill plus label colour. Dark cards get a dark chip,
+/// light cards a light one, each carrying the theme's text so a tag never reads
+/// same-on-same (dark text on a dark chip in light mode).
+pub fn crosshair_tag() -> (Color32, Color32) {
+    let p = palette();
+    let fill = if luminance(p.card) < 0.18 { Color32::from_gray(70) } else { Color32::from_gray(215) };
+    let ink = if contrast(fill, p.text) >= 4.5 { p.text } else { ink_on(fill) };
+    (fill, ink)
+}
+
+/// Black or white, whichever contrasts with `fill`: label ink on coloured chips such as
+/// the last-price tag, whose up/down fill differs between light and dark themes.
+pub fn ink_on(fill: Color32) -> Color32 {
+    if contrast(fill, Color32::BLACK) >= contrast(fill, Color32::WHITE) { Color32::BLACK } else { Color32::WHITE }
+}
+
 /// HIP-3 perp badges and labels: a colour no listed instrument uses, so a perp never reads as
 /// the stock, future or FX rate it references.
 pub fn perp() -> Color32 {
@@ -345,5 +397,29 @@ mod tests {
         set_palette(crate::themes::terminal_light().palette(Color32::RED));
         assert_eq!(accent(), Color32::RED);
         assert!(!palette().dark);
+    }
+
+    #[test]
+    fn axis_labels_and_tags_are_readable() {
+        for t in crate::themes::builtins() {
+            set_palette(t.palette(DEFAULT_ACCENT));
+            // Tick labels clear the small-text contrast floor on every theme.
+            assert!(contrast(axis_text(), t.colors.panel.0) >= 4.5, "{} axis", t.name);
+            // Crosshair chips contrast with their label, never same-on-same.
+            let (fill, ink) = crosshair_tag();
+            assert!(contrast(fill, ink) >= 4.5, "{} tag", t.name);
+            // Last-price ink reads on both up and down fills.
+            for col in [t.colors.up.0, t.colors.down.0] {
+                assert!(contrast(ink_on(col), col) >= 4.5, "{} price tag", t.name);
+            }
+        }
+        // A washed-out custom theme still gets readable ticks and tags.
+        let mut washed = crate::themes::terminal_light();
+        washed.colors.muted = crate::themes::Hex::rgb(200, 200, 205);
+        washed.colors.text = crate::themes::Hex::rgb(150, 150, 155);
+        set_palette(washed.palette(DEFAULT_ACCENT));
+        assert!(contrast(axis_text(), washed.colors.panel.0) >= 4.5, "washed axis");
+        let (fill, ink) = crosshair_tag();
+        assert!(contrast(fill, ink) >= 4.5, "washed tag");
     }
 }

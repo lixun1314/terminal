@@ -10,6 +10,7 @@ mod dock;
 mod hl_worker;
 mod layout;
 mod layouts;
+mod macro_view;
 mod markets_view;
 mod palette;
 mod prefs;

@@ -40,6 +40,8 @@ const COMMANDS: &[(&str, &str, &str, Option<Action>)] = &[
     ("PERP", "", "hip-3 perpetual hyperliquid xyz perps stock perp", Some(Action::TogglePerp)),
     ("WEI", "", "world equity indices markets", None),
     ("GC", "", "yield curve treasury rates", None),
+    ("MACRO", "", "gdp m2 cpi ism pmi economic indicators macro", None),
+    ("MACRO REFRESH", "", "refetch fred macro series", None),
     ("SECF", "Security search", "search find", None),
     ("LAYOUTS", "", "saved layouts workspaces", None),
     ("LAYOUT NEW", "Start a new saved layout", "workspace", None),

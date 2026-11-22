@@ -82,6 +82,13 @@ pub enum PaneSettings {
     Help,
     Wei,
     Curve,
+    /// US macro indicators pane: selected chart and span.
+    Macro {
+        #[serde(default)]
+        indicator: tr_macro::Indicator,
+        #[serde(default)]
+        range: crate::macro_view::MacroRange,
+    },
     Search(String),
     /// Headlines for a security (`None` = general market news).
     News(Option<String>),

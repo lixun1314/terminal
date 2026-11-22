@@ -636,6 +636,7 @@ impl TerminalApp {
             let items = [
                 (Icon::Globe, "World Markets", "WEI", Function::Wei, PaneKind::Wei),
                 (Icon::Curve, "Yield Curve", "GC", Function::Curve, PaneKind::Curve),
+                (Icon::Gauge, "Macro", "MACRO", Function::Macro, PaneKind::Macro(Box::default())),
                 (
                     Icon::Chart,
                     "Options",

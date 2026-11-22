@@ -386,6 +386,7 @@ pub struct HttpSource {
 impl HttpSource {
     pub fn new() -> Result<Self> {
         let client = reqwest::Client::builder()
+            .tls_backend_rustls()
             .user_agent(concat!(
                 "terminal/",
                 env!("CARGO_PKG_VERSION"),

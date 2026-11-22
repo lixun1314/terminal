@@ -269,6 +269,10 @@ pub enum Function {
     Wei,
     /// US Treasury yield curve.
     Curve,
+    /// US macro indicators: GDP, M2, CPI, ISM PMI (`MACRO`, `MACRO REFRESH`).
+    Macro,
+    /// Refetch the FRED macro series now.
+    RefreshMacro,
     /// Security search across asset classes.
     Search(String),
     /// Brokerage portfolio view, with an optional subcommand (`REFRESH`, `CONNECT`, `SETUP`).
@@ -353,6 +357,11 @@ fn parse_function(head: &str, rest: &[&str]) -> Option<Function> {
         "HELP" | "?" | "H" => Function::Help,
         "WEI" | "MARKETS" | "WORLD" => Function::Wei,
         "GC" | "YCRV" | "CURVE" | "YC" => Function::Curve,
+        "MACRO" | "ECST" | "ECON" => match words().first().map(String::as_str) {
+            Some("REFRESH" | "FORCE") => Function::RefreshMacro,
+            _ => Function::Macro,
+        },
+        "REFRESHMACRO" => Function::RefreshMacro,
         "SECF" | "SEARCH" | "FIND" => Function::Search(joined()),
         "PORT" | "PORTFOLIO" | "PRTU" => Function::Portfolio(PortView::Summary, words().join(" ")),
         "ACCT" | "ACCOUNTS" | "ACCTS" | "BAL" | "BALANCES" => {
@@ -512,6 +521,8 @@ fn describe(f: &Function) -> String {
         Function::Help => "Help".into(),
         Function::Wei => "World markets overview".into(),
         Function::Curve => "US Treasury yield curve".into(),
+        Function::Macro => "US macro indicators: GDP, M2, CPI, ISM PMI".into(),
+        Function::RefreshMacro => "Refetch FRED macro series now".into(),
         Function::Search(q) => format!("Search securities: {q}"),
         Function::Portfolio(v, a) if a.is_empty() => match v {
             PortView::Summary => "Brokerage portfolio: value, cash, P&L and holdings (SnapTrade)".into(),

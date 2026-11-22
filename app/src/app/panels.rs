@@ -59,6 +59,15 @@ impl TerminalApp {
             }
             PaneKind::Wei => actions.extend(markets_view::wei(ui, &self.quotes, self.wei_updated.as_deref())),
             PaneKind::Curve => actions.extend(markets_view::curve(ui, self.curves.as_deref())),
+            PaneKind::Macro(m) => {
+                let (a, refresh) = crate::macro_view::show(ui, m, self.macro_data.as_deref(), self.macro_loading);
+                actions.extend(a);
+                if refresh {
+                    self.macro_loading = true;
+                    self.worker.send(Request::Macro { force: true });
+                    self.last_macro = Some(Instant::now());
+                }
+            }
             PaneKind::Search { query } => {
                 let hits = if self.net_hits.0 == *query { self.net_hits.1.as_slice() } else { &[] };
                 let perps: Vec<&str> = perps.iter().map(String::as_str).collect();

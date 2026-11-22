@@ -141,6 +141,10 @@ pub enum Request {
     /// A pane closed or changed: stop its live feed and drop its series.
     Forget(PaneId),
     YieldCurves,
+    /// US macro indicators (GDP, M2, CPI, ISM PMI); `force` refetches FRED now.
+    Macro {
+        force: bool,
+    },
     Search(String),
     /// The HIP-3 perps the Terminal server lists as live.
     PerpMarkets,
@@ -315,6 +319,7 @@ pub enum Response {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     CongressRefreshed(String),
     Curves(Box<YieldCurves>),
+    Macro(Box<tr_macro::Snapshot>),
     SearchHits {
         query: String,
         hits: Vec<SearchHit>,
@@ -762,6 +767,20 @@ async fn handle(s: &Arc<Shared>, req: Request) {
             Ok(c) => s.send(Response::Curves(Box::new(c))),
             Err(e) => s.send(Response::Status(format!("yield curve: {e:#}"))),
         },
+        Request::Macro { force } => {
+            // The browser has no disk cache and FRED sends no CORS headers: seeds only.
+            #[cfg(target_arch = "wasm32")]
+            let dir = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            let dir = Some(data_dir().join("macro"));
+            match tr_macro::fred::FredSource::new() {
+                Ok(src) => {
+                    let snap = tr_macro::load(&src, dir.as_deref(), force).await;
+                    s.send(Response::Macro(Box::new(snap)));
+                }
+                Err(e) => s.send(Response::Status(format!("macro: {e:#}"))),
+            }
+        }
         Request::Portfolio(creds) => {
             let result = match creds {
                 None => Ok(tr_broker::sample::portfolio()),

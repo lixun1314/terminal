@@ -20,7 +20,7 @@ use crate::widgets::{self, Icon};
 use crate::worker::{Request, Worker};
 
 /// Panels offered by the + menus: label and command word.
-pub const PANELS: [(&str, &str); 14] = [
+pub const PANELS: [(&str, &str); 15] = [
     ("Chart", "CHART"),
     ("Watchlist", "WL"),
     ("News", "NEWS"),
@@ -29,6 +29,7 @@ pub const PANELS: [(&str, &str); 14] = [
     ("Portfolio", "PORT"),
     ("World Markets", "WEI"),
     ("Yield Curve", "GC"),
+    ("Macro", "MACRO"),
     ("Congress Feed", "CONG"),
     ("Politicians", "POL"),
     ("Alerts", "ALRT"),
@@ -428,6 +429,14 @@ impl TerminalApp {
                 self.worker.send(Request::Profile { pane: id, query: query.clone() });
                 PaneKind::Profile { query, data: None, loading: true }
             }
+            PaneKind::Macro(m) => {
+                if self.macro_data.is_none() {
+                    self.macro_loading = true;
+                    self.worker.send(Request::Macro { force: false });
+                    self.last_macro = Some(web_time::Instant::now());
+                }
+                PaneKind::Macro(m)
+            }
             k => k,
         }
     }
@@ -740,6 +749,7 @@ impl TerminalApp {
             }
             "WEI" | "MARKETS" => PaneKind::Wei,
             "GC" | "CURVE" | "YC" => PaneKind::Curve,
+            "MACRO" | "ECST" | "ECON" => PaneKind::Macro(Box::default()),
             "CONG" | "FEED" | "CONGRESS" => PaneKind::Feed { filter: FeedFilter::default() },
             "POL" | "POLITICIANS" => PaneKind::Politicians,
             "ALRT" | "ALERTS" => PaneKind::Alerts,

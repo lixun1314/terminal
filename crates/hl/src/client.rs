@@ -183,7 +183,7 @@ impl Client {
     }
 
     fn with_urls(info_url: String, exchange_url: String) -> Result<Self> {
-        let b = reqwest::Client::builder();
+        let b = reqwest::Client::builder().tls_backend_rustls();
         #[cfg(not(target_arch = "wasm32"))]
         let b = b.user_agent(concat!("terminal/", env!("CARGO_PKG_VERSION")));
         Ok(Self { http: b.build()?, info_url, exchange_url, timeout: REQUEST_TIMEOUT })

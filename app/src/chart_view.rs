@@ -892,7 +892,7 @@ impl ChartState {
                     Align2::LEFT_CENTER,
                     scale::format_price(*t, dec),
                     mono(11.0),
-                    muted(),
+                    theme::axis_text(),
                 );
             }
         }
@@ -907,7 +907,7 @@ impl ChartState {
                         Align2::LEFT_CENTER,
                         scale::format_value(t),
                         mono(10.5),
-                        muted(),
+                        theme::axis_text(),
                     );
                 }
             }
@@ -924,7 +924,13 @@ impl ChartState {
             for (j, label) in scale::time_ticks(&times, 0, times.len(), gap, self.tf) {
                 let x = price_rect.left() + v.x_center(idxs[j]) as f32;
                 ui.painter_at(plot_all).vline(x, plot_all.y_range(), Stroke::new(1.0, theme::grid()));
-                time_painter.text(pos2(x, time_rect.center().y), Align2::CENTER_CENTER, label, mono(10.5), muted());
+                time_painter.text(
+                    pos2(x, time_rect.center().y),
+                    Align2::CENTER_CENTER,
+                    label,
+                    mono(10.5),
+                    theme::axis_text(),
+                );
             }
         }
 
@@ -952,7 +958,7 @@ impl ChartState {
                     Align2::LEFT_CENTER,
                     scale::format_price(last.close, self.sec.decimals(last.close)),
                     mono(11.0),
-                    Color32::BLACK.gamma_multiply(tag_fade),
+                    theme::ink_on(col).gamma_multiply(tag_fade),
                 );
             }
         }
@@ -969,7 +975,8 @@ impl ChartState {
         // ---- crosshair + legend ----
         let hovered_bar = hover.and_then(|p| v.bar_at((p.x - price_rect.left()) as f64, len));
         if let Some(p) = hover {
-            let ch = Stroke::new(1.0, Color32::from_gray(110));
+            let ch = Stroke::new(1.0, muted());
+            let (tag_fill, tag_ink) = theme::crosshair_tag();
             let plot_painter = ui.painter_at(plot_all);
             let xi = hovered_bar.map(|i| price_rect.left() + v.x_center(i) as f32).unwrap_or(p.x);
             dashed_v(&plot_painter, xi, plot_all.y_range(), ch);
@@ -977,21 +984,21 @@ impl ChartState {
             if price_rect.contains(p) {
                 let price = scale.price_at((p.y - price_rect.top()) as f64);
                 let tag = Rect::from_min_size(pos2(plot_all.right() + 1.0, p.y - 8.0), vec2(AXIS_W - 2.0, 16.0));
-                axis_painter.rect_filled(tag, 0.0, Color32::from_gray(70));
+                axis_painter.rect_filled(tag, 0.0, tag_fill);
                 axis_painter.text(
                     tag.left_center() + vec2(5.0, 0.0),
                     Align2::LEFT_CENTER,
                     scale::format_price(price, self.sec.decimals(price)),
                     mono(11.0),
-                    text(),
+                    tag_ink,
                 );
             }
             if let Some(i) = hovered_bar {
                 let label = scale::crosshair_label(self.bars[i].ts, self.tf);
                 let gw = label.len() as f32 * 7.0 + 10.0;
                 let tag = Rect::from_center_size(pos2(xi, time_rect.center().y), vec2(gw, TIME_H));
-                time_painter.rect_filled(tag, 0.0, Color32::from_gray(70));
-                time_painter.text(tag.center(), Align2::CENTER_CENTER, label, mono(10.5), text());
+                time_painter.rect_filled(tag, 0.0, tag_fill);
+                time_painter.text(tag.center(), Align2::CENTER_CENTER, label, mono(10.5), tag_ink);
             }
             if self.draw.tool.is_some() {
                 ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
