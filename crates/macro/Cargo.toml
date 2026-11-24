@@ -1,0 +1,21 @@
+[package]
+name = "tr-macro"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+tr-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+# FRED aborts rustls handshakes (probe: every rustls config fails, curl/system TLS works),
+# so the desktop fetcher uses the system TLS stack. The browser keeps rustls (seeds only).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { workspace = true, features = ["native-tls"] }
