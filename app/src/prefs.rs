@@ -180,6 +180,11 @@ pub struct PanelDefaults {
     pub show_volume: bool,
     pub congress_markers: bool,
     pub book_depth: usize,
+    /// Watchlist quote poll interval in milliseconds: the fast lane (sidebar / watchlist
+    /// pane). 500 ms is best-effort; failures back the poll off automatically.
+    pub watchlist_quote_ms: u64,
+    /// World-markets and other panel quote interval: the slow lane, with manual refresh.
+    pub panel_quote_secs: u64,
 }
 
 impl Default for PanelDefaults {
@@ -190,6 +195,8 @@ impl Default for PanelDefaults {
             show_volume: true,
             congress_markers: true,
             book_depth: 20,
+            watchlist_quote_ms: 1000,
+            panel_quote_secs: 10,
         }
     }
 }

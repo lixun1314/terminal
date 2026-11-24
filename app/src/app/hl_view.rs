@@ -75,7 +75,7 @@ impl TerminalApp {
             .map_or("Choose an account…".to_string(), |a| format!("{} {}", a.label(), a.masked_number()));
         ui.add_enabled_ui(!sending, |ui| {
             egui::ComboBox::from_id_salt("hl-ticket-account")
-                .width(ui.available_width())
+                .width(super::trading::ticket_width())
                 .selected_text(current)
                 .show_ui(ui, |ui| {
                     for a in &accounts {
@@ -98,7 +98,7 @@ impl TerminalApp {
         }
 
         ui.horizontal(|ui| {
-            let w = (ui.available_width() - dp(6.0)) / 2.0;
+            let w = (super::trading::ticket_width() - dp(6.0)) / 2.0;
             for (side, color) in [(Side::Buy, theme::up()), (Side::Sell, theme::down())] {
                 let b = if t.side == side {
                     egui::Button::new(RichText::new(side.label()).strong().color(Color32::WHITE)).fill(color)
@@ -373,7 +373,7 @@ impl TerminalApp {
             // Review stays clickable with a refusal, so the cap's reason shows in the ticket.
             let clickable = blocker.is_none() && !sending;
             if ui
-                .add_enabled(clickable, b.min_size(egui::vec2(ui.available_width() - dp(24.0), dp(30.0))))
+                .add_enabled(clickable, b.min_size(egui::vec2(super::trading::ticket_width() - dp(24.0), dp(30.0))))
                 .on_hover_text("Rounds the order, checks the limits, then asks you to confirm")
                 .clicked()
             {

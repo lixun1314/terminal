@@ -90,6 +90,12 @@ pub enum PaneSettings {
         range: crate::macro_view::MacroRange,
     },
     Search(String),
+    /// Deprecated: the removed commodities board. Older layouts load it as a security
+    /// search with the same query.
+    Comd {
+        #[serde(default)]
+        query: String,
+    },
     /// Headlines for a security (`None` = general market news).
     News(Option<String>),
     OrderBook {

@@ -385,7 +385,7 @@ pub struct HttpSource {
 
 impl HttpSource {
     pub fn new() -> Result<Self> {
-        let client = reqwest::Client::builder()
+        let client = tr_core::http::client_builder()
             .tls_backend_rustls()
             .user_agent(concat!(
                 "terminal/",
@@ -412,7 +412,14 @@ impl HttpSource {
         if let (Some(tok), false) = (guard.as_ref(), force) {
             return Ok(tok.clone());
         }
-        let home = self.client.get(senate::HOME_URL).send().await?.text().await?;
+        let resp = self.client.get(senate::HOME_URL).send().await?;
+        let status = resp.status();
+        let home = resp.text().await?;
+        if !status.is_success() {
+            bail!(
+                "eFD home: HTTP {status} (the site blocks some regions; set TR_PROXY or write a proxy URL to proxy.txt in the data directory)"
+            );
+        }
         let form_tok = senate::csrf_from_form(&home).ok_or_else(|| anyhow!("no CSRF token on eFD home page"))?;
         let resp = self
             .client

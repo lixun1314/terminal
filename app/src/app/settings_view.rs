@@ -616,6 +616,41 @@ impl TerminalApp {
                 d.book_depth = depths[i];
             }
         });
+        section(ui, "Quotes");
+        row(ui, "Watchlist refresh", |ui| {
+            let ms = [500u64, 1000, 2000, 5000, 10_000, 20_000];
+            let labels = ["0.5", "1", "2", "5", "10", "20"];
+            if let Some(i) = widgets::segmented(
+                ui,
+                "quote-poll-wl",
+                &labels,
+                ms.iter().position(|&x| x == d.watchlist_quote_ms),
+                22.0,
+            ) {
+                d.watchlist_quote_ms = ms[i];
+            }
+        });
+        row(ui, "Panel refresh", |ui| {
+            let secs = [5u64, 10, 20, 60];
+            let labels: Vec<String> = secs.iter().map(|s| s.to_string()).collect();
+            let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+            if let Some(i) = widgets::segmented(
+                ui,
+                "quote-poll-panel",
+                &labels,
+                secs.iter().position(|&x| x == d.panel_quote_secs),
+                22.0,
+            ) {
+                d.panel_quote_secs = secs[i];
+            }
+        });
+        ui.label(
+            RichText::new(
+                "Watchlist polls fast (0.5s is best-effort); other quote panes (world markets) poll slowly and have a Refresh button (REFRESH QUOTES). Polls back off automatically if the provider throttles, then recover.",
+            )
+            .font(ui_font(11.0))
+            .color(muted()),
+        );
         ui.add_space(6.0);
         ui.label(
             RichText::new("Each pane's own settings (chart type, indicators, filters, depth, link group, tab title) are saved with the layout.")

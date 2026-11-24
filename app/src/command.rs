@@ -230,6 +230,8 @@ pub enum Function {
     Untrack(String),
     Alerts,
     Refresh,
+    /// Refetch watchlist and world-markets quotes now (`REFRESH QUOTES`).
+    RefreshQuotes,
     Watchlist,
     WatchAdd(Vec<String>),
     WatchRemove(Vec<String>),
@@ -324,7 +326,11 @@ fn parse_function(head: &str, rest: &[&str]) -> Option<Function> {
         "TRACK" => Function::Track(joined()),
         "UNTRACK" => Function::Untrack(joined()),
         "ALRT" | "ALERTS" | "ALERT" => Function::Alerts,
-        "REFRESH" | "SYNC" => Function::Refresh,
+        "REFRESH" | "SYNC" => match words().first().map(String::as_str) {
+            Some("QUOTES" | "PRICES" | "Q") => Function::RefreshQuotes,
+            _ => Function::Refresh,
+        },
+        "QUOTES" | "PRICES" => Function::RefreshQuotes,
         "W" | "WL" | "WATCH" | "WATCHLIST" | "MON" => match words().first().map(String::as_str) {
             Some("ADD") => Function::WatchAdd(words()[1..].to_vec()),
             Some("DEL") | Some("RM") | Some("REMOVE") => Function::WatchRemove(words()[1..].to_vec()),
@@ -363,6 +369,9 @@ fn parse_function(head: &str, rest: &[&str]) -> Option<Function> {
         },
         "REFRESHMACRO" => Function::RefreshMacro,
         "SECF" | "SEARCH" | "FIND" => Function::Search(joined()),
+        // The old commodities board is gone: its command opens the security search, where
+        // commodities are found by name, ticker or Chinese alias (`铜`, `原油`, `iron ore`…).
+        "COMD" | "CMDTY" | "COMMOD" | "COMMODITIES" => Function::Search(String::new()),
         "PORT" | "PORTFOLIO" | "PRTU" => Function::Portfolio(PortView::Summary, words().join(" ")),
         "ACCT" | "ACCOUNTS" | "ACCTS" | "BAL" | "BALANCES" => {
             Function::Portfolio(PortView::Accounts, words().join(" "))
@@ -490,6 +499,7 @@ fn describe(f: &Function) -> String {
         Function::Untrack(n) => format!("Stop tracking {n}"),
         Function::Alerts => "Alerts".into(),
         Function::Refresh => "Refresh congressional disclosures now".into(),
+        Function::RefreshQuotes => "Reload watchlist and world-markets quotes now".into(),
         Function::Watchlist => "Watchlist".into(),
         Function::WatchAdd(s) => format!("Add {} to watchlist", s.join(", ")),
         Function::WatchRemove(s) => format!("Remove {} from watchlist", s.join(", ")),
@@ -631,6 +641,10 @@ mod tests {
             parse("WL ADD msft nvda"),
             Some(Command::Function(Function::WatchAdd(vec!["MSFT".into(), "NVDA".into()])))
         );
+        assert_eq!(parse("REFRESH QUOTES"), Some(Command::Function(Function::RefreshQuotes)));
+        assert_eq!(parse("QUOTES"), Some(Command::Function(Function::RefreshQuotes)));
+        assert_eq!(parse("REFRESH"), Some(Command::Function(Function::Refresh)), "congress stays on REFRESH");
+        assert_eq!(parse("COMD"), Some(Command::Function(Function::Search(String::new()))), "board removed → search");
         assert_eq!(parse("LAYOUT 4"), Some(Command::Function(Function::Layout("4".into()))));
         assert_eq!(
             parse("LAYOUT save Morning Desk"),

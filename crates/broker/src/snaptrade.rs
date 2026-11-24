@@ -261,7 +261,7 @@ impl SnapTrade {
         if !creds.has_keys() {
             bail!("SnapTrade client ID and consumer key are not set");
         }
-        let http = reqwest::Client::builder()
+        let http = tr_core::http::client_builder()
             .tls_backend_rustls()
             .user_agent(concat!("terminal/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))

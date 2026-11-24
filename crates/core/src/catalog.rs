@@ -199,6 +199,15 @@ pub static CATALOG: LazyLock<Vec<Listing>> = LazyLock::new(|| {
         yahoo("S1", Cmdty, "Soybean Future", Commodities, "ZS=F", 1050.0),
         yahoo("KC1", Cmdty, "Coffee Future", Commodities, "KC=F", 230.0),
         yahoo("CT1", Cmdty, "Cotton Future", Commodities, "CT=F", 70.0),
+        // Cyclical commodities from the PTM framework plus other liquid futures.
+        yahoo("ALI1", Cmdty, "Aluminum Future", Commodities, "ALI=F", 2600.0),
+        yahoo("TIO1", Cmdty, "Iron Ore 62% Fe Future", Commodities, "TIO=F", 100.0),
+        yahoo("PA1", Cmdty, "Palladium Future", Commodities, "PA=F", 1000.0),
+        yahoo("CC1", Cmdty, "Cocoa Future", Commodities, "CC=F", 6000.0),
+        yahoo("SB1", Cmdty, "Sugar Future", Commodities, "SB=F", 20.0),
+        yahoo("LE1", Cmdty, "Live Cattle Future", Commodities, "LE=F", 180.0),
+        yahoo("HE1", Cmdty, "Lean Hogs Future", Commodities, "HE=F", 85.0),
+        yahoo("OJ1", Cmdty, "Orange Juice Future", Commodities, "OJ=F", 300.0),
         // US Treasury yields (Treasury.gov par curve, FRED fallback, Yahoo intraday where available)
         tsy("US1M", "US Treasury 1 Month", "1 Mo", "DGS1MO", 1.0 / 12.0, None, 4.2),
         tsy("US3M", "US Treasury 3 Month", "3 Mo", "DGS3MO", 0.25, Some("^IRX"), 4.2),
@@ -300,6 +309,73 @@ pub fn treasury_curve() -> Vec<&'static Listing> {
     v
 }
 
+/// Trader shorthand and Chinese names for catalog tickers. Search checks these alongside
+/// the English names, so `铜`, `原油`, `铁矿石`, `WTI` find the right future.
+const ALIASES: &[(&str, &str)] = &[
+    ("wti", "CL1"),
+    ("crude", "CL1"),
+    ("crude oil", "CL1"),
+    ("原油", "CL1"),
+    ("美油", "CL1"),
+    ("wti原油", "CL1"),
+    ("brent", "CO1"),
+    ("布伦特", "CO1"),
+    ("布油", "CO1"),
+    ("copper", "HG1"),
+    ("铜", "HG1"),
+    ("comex铜", "HG1"),
+    ("lme铜", "HG1"),
+    ("iron ore", "TIO1"),
+    ("ironore", "TIO1"),
+    ("铁矿", "TIO1"),
+    ("铁矿石", "TIO1"),
+    ("gold", "GC1"),
+    ("黄金", "GC1"),
+    ("silver", "SI1"),
+    ("白银", "SI1"),
+    ("platinum", "PL1"),
+    ("铂", "PL1"),
+    ("铂金", "PL1"),
+    ("palladium", "PA1"),
+    ("钯", "PA1"),
+    ("钯金", "PA1"),
+    ("nat gas", "NG1"),
+    ("natgas", "NG1"),
+    ("natural gas", "NG1"),
+    ("天然气", "NG1"),
+    ("gasoline", "XB1"),
+    ("rbob", "XB1"),
+    ("汽油", "XB1"),
+    ("heating oil", "HO1"),
+    ("柴油", "HO1"),
+    ("取暖油", "HO1"),
+    ("corn", "C1"),
+    ("玉米", "C1"),
+    ("wheat", "W1"),
+    ("小麦", "W1"),
+    ("soybean", "S1"),
+    ("soybeans", "S1"),
+    ("大豆", "S1"),
+    ("coffee", "KC1"),
+    ("咖啡", "KC1"),
+    ("cotton", "CT1"),
+    ("棉花", "CT1"),
+    ("sugar", "SB1"),
+    ("糖", "SB1"),
+    ("白糖", "SB1"),
+    ("cocoa", "CC1"),
+    ("可可", "CC1"),
+    ("cattle", "LE1"),
+    ("活牛", "LE1"),
+    ("hogs", "HE1"),
+    ("瘦肉猪", "HE1"),
+    ("orange juice", "OJ1"),
+    ("橙汁", "OJ1"),
+    ("aluminum", "ALI1"),
+    ("aluminium", "ALI1"),
+    ("铝", "ALI1"),
+];
+
 /// Ranked search over tickers and names. An optional yellow key in the query
 /// (`gold cmdty`, `usd <crncy>`) filters by class.
 pub fn search(query: &str, limit: usize) -> Vec<&'static Listing> {
@@ -318,12 +394,20 @@ pub fn search(query: &str, limit: usize) -> Vec<&'static Listing> {
     if words.is_empty() && key.is_none() {
         return Vec::new();
     }
+    // Alias matches (Chinese names, trader shorthand) take precedence over free text.
+    let q = query.trim().to_lowercase();
+    let aliased: Vec<&'static str> = ALIASES
+        .iter()
+        .filter(|(a, _)| *a == q || (q.chars().count() >= 2 && (a.contains(&q) || q.contains(*a))))
+        .map(|(_, t)| *t)
+        .collect();
     let mut scored: Vec<(i32, &Listing)> = CATALOG
         .iter()
         .filter(|l| key.is_none_or(|k| l.class.yellow_key() == k))
         .filter_map(|l| {
             let name = l.name.to_ascii_uppercase();
-            let mut score = 0;
+            let mut score = if aliased.contains(&l.ticker) { 1400 } else { 0 };
+            let mut matched_all = true;
             for (i, w) in words.iter().enumerate() {
                 let s = if l.ticker == w.as_str() {
                     1000
@@ -334,11 +418,12 @@ pub fn search(query: &str, limit: usize) -> Vec<&'static Listing> {
                 } else if name.contains(w.as_str()) {
                     150
                 } else {
-                    return None;
+                    matched_all = false;
+                    break;
                 };
                 score += if i == 0 { s } else { s / 2 };
             }
-            Some((score, l))
+            ((matched_all && (score > 0 || words.is_empty())) || aliased.contains(&l.ticker)).then_some((score, l))
         })
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.ticker.cmp(b.1.ticker)));
@@ -362,6 +447,21 @@ mod tests {
             assert!(l.sample_level > 0.0);
         }
         assert_eq!(lookup("EURUSD", None).unwrap().yahoo, Some("EURUSD=X"));
+    }
+
+    #[test]
+    fn aliases_find_cyclical_commodities() {
+        let top = |q: &str| search(q, 5).first().map(|l| l.ticker);
+        assert_eq!(top("铜"), Some("HG1"));
+        assert_eq!(top("铜 CMDTY"), Some("HG1"));
+        assert_eq!(top("原油"), Some("CL1"));
+        assert_eq!(top("布伦特"), Some("CO1"));
+        assert_eq!(top("铁矿石"), Some("TIO1"));
+        assert_eq!(top("天然气"), Some("NG1"));
+        assert_eq!(top("WTI"), Some("CL1"));
+        assert_eq!(top("wti 原油"), Some("CL1"));
+        assert!(search("铜", 5).iter().all(|l| l.class == AssetClass::Cmdty));
+        assert_eq!(top("不存在的品种"), None);
     }
 
     #[test]

@@ -106,6 +106,9 @@ pub fn wei(ui: &mut Ui, quotes: &HashMap<String, Quote>, updated: Option<&str>) 
         ui.label(RichText::new("WORLD MARKETS").font(mono(12.5)).color(amber()));
         ui.label(RichText::new(updated.unwrap_or("loading quotes…")).font(mono(11.0)).color(muted()));
         ui.label(RichText::new("click a row to chart it").font(mono(11.0)).color(muted()));
+        if ui.small_button("Refresh").on_hover_text("Reload quotes now (REFRESH QUOTES)").clicked() {
+            out.push(Action::Command("REFRESH QUOTES".into()));
+        }
     });
     egui::ScrollArea::vertical().id_salt("wei").auto_shrink([false, false]).show(ui, |ui| {
         // Distribute groups across columns, keeping them in display order.
@@ -299,7 +302,13 @@ pub fn class_color(c: AssetClass) -> Color32 {
 }
 
 /// Security search panel (`SECF <query>`). `perps` are the HIP-3 perps it can offer.
-pub fn search(ui: &mut Ui, query: &mut String, network: &[SearchHit], perps: &[&str]) -> (Vec<Action>, bool) {
+pub fn search(
+    ui: &mut Ui,
+    query: &mut String,
+    network: &[SearchHit],
+    perps: &[&str],
+    quotes: &HashMap<String, Quote>,
+) -> (Vec<Action>, bool) {
     let mut out = Vec::new();
     let mut changed = false;
     ui.horizontal(|ui| {
@@ -312,7 +321,7 @@ pub fn search(ui: &mut Ui, query: &mut String, network: &[SearchHit], perps: &[&
         );
     });
     ui.label(
-        RichText::new(" MARKET KEY            CLASS   NAME")
+        RichText::new(" MARKET KEY            CLASS   NAME                              LAST     CHG%  EXCH")
             .font(mono(11.5))
             .color(amber())
             .background_color(theme::header()),
@@ -323,17 +332,19 @@ pub fn search(ui: &mut Ui, query: &mut String, network: &[SearchHit], perps: &[&
     }
     egui::ScrollArea::vertical().id_salt("secf").auto_shrink([false, false]).show(ui, |ui| {
         for h in &hits {
-            let line = format!(
-                " {:<20}  {:<6}  {}{}",
-                h.key,
-                h.class.label(),
-                h.name,
-                h.exchange.as_deref().map(|e| format!("  ({e})")).unwrap_or_default()
-            );
+            let (last, chg) = match quotes.get(&h.key) {
+                Some(q) => (
+                    format!("{:>9}", format!("{:.1$}", q.last, tr_data::security(&h.key).decimals(q.last))),
+                    format!("{:>+8.2}%", q.change_pct()),
+                ),
+                None => (format!("{:>9}", "…"), format!("{:>8}", "")),
+            };
+            let name: String = h.name.chars().take(32).collect();
+            let exch = h.exchange.as_deref().unwrap_or("");
+            let line = format!(" {:<20}  {:<6}  {:<32} {last} {chg}  {exch}", h.key, h.class.label(), name);
+            let color = if quotes.contains_key(&h.key) { class_color(h.class) } else { muted() };
             let r = ui.add(
-                egui::Label::new(RichText::new(line).font(mono(12.0)).color(class_color(h.class)))
-                    .extend()
-                    .sense(Sense::click()),
+                egui::Label::new(RichText::new(line).font(mono(12.0)).color(color)).extend().sense(Sense::click()),
             );
             if r.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

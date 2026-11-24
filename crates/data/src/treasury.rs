@@ -112,7 +112,7 @@ pub struct TreasuryProvider {
 
 impl TreasuryProvider {
     pub fn new() -> Result<Self> {
-        let client = reqwest::Client::builder()
+        let client = tr_core::http::client_builder()
             .tls_backend_rustls()
             .user_agent("Mozilla/5.0 (compatible; terminal)")
             .timeout(Duration::from_secs(30))

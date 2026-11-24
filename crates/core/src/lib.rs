@@ -3,6 +3,7 @@
 
 pub mod bar;
 pub mod catalog;
+pub mod http;
 pub mod indicators;
 pub mod options;
 pub mod perps;

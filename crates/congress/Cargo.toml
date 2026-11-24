@@ -12,6 +12,7 @@ regex.workspace = true
 
 # Ingest and storage: desktop only (the browser build has no SQLite and can't reach the sources).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tr-core.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

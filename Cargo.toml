@@ -27,7 +27,9 @@ serde_json = "1"
 toml = "0.9"
 regex = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "cookies", "json", "gzip", "form", "query"] }
+# http2: Yahoo answers 429 to HTTP/1.1-only clients; system-proxy: follow the OS proxy
+# settings (ClashX Pro etc.) when no TR_PROXY/proxy.txt is configured.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "cookies", "json", "gzip", "form", "query", "socks", "http2", "system-proxy"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

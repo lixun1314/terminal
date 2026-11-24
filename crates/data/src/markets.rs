@@ -3,19 +3,24 @@
 //! | class | history | quotes | live |
 //! |---|---|---|---|
 //! | Crypto | Binance klines (Coinbase fallback) | Binance 24h ticker | Binance kline websocket (Coinbase ticker fallback) |
-//! | Govt | Treasury.gov daily curve (FRED fallback); Yahoo `^TNX` etc. intraday | Treasury.gov | — |
-//! | Equity/ETF | Alpaca if keyed, else Yahoo | Yahoo spark | — |
-//! | FX/Index/Comdty | Yahoo (`EURUSD=X`, `^GSPC`, `CL=F`) | Yahoo spark | — |
+//! | Govt | Treasury.gov daily curve (FRED fallback); Yahoo `^TNX` etc. intraday | Treasury.gov | Yahoo tail poll (intraday only) |
+//! | Equity/ETF | Alpaca if keyed, else Yahoo | Yahoo spark | Yahoo tail poll |
+//! | FX/Index/Comdty | Yahoo (`EURUSD=X`, `^GSPC`, `CL=F`) | Yahoo spark | Yahoo tail poll |
 //! | HIP-3 perps (`xyz:AAPL`) | — | — | — |
 //!
 //! HIP-3 perps come only from the Terminal server ([`crate::remote::RemoteMarkets`]).
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 use tr_core::{AssetClass, Bar, Security, Timeframe, catalog};
 
 use crate::alpaca::AlpacaProvider;
 use crate::crypto::CryptoProvider;
+use crate::rt;
 use crate::treasury::TreasuryProvider;
 use crate::yahoo::{YahooProvider, yahoo_symbol};
 use crate::{
@@ -23,7 +28,7 @@ use crate::{
 };
 
 pub struct Markets {
-    yahoo: YahooProvider,
+    yahoo: Arc<YahooProvider>,
     crypto: CryptoProvider,
     treasury: TreasuryProvider,
     alpaca: Option<AlpacaProvider>,
@@ -34,7 +39,7 @@ impl Markets {
     pub fn new(alpaca: Option<AlpacaProvider>) -> Result<Self> {
         let name = if alpaca.is_some() { "alpaca+yahoo+binance+ust" } else { "yahoo+binance+ust" }.to_string();
         Ok(Self {
-            yahoo: YahooProvider::new()?,
+            yahoo: Arc::new(YahooProvider::new()?),
             crypto: CryptoProvider::new()?,
             treasury: TreasuryProvider::new()?,
             alpaca,
@@ -118,7 +123,40 @@ impl MarketData for Markets {
 
     fn live(&self, symbol: &str, tf: Timeframe) -> Option<LiveFeed> {
         let sec = security(symbol);
-        (sec.class == AssetClass::Crypto).then(|| CryptoProvider::live(&sec, tf))
+        if sec.class == AssetClass::Crypto {
+            return Some(CryptoProvider::live(&sec, tf));
+        }
+        // Yahoo has no push stream for these classes, so poll the chart tail and let the
+        // worker's live merge keep the chart current while the market trades.
+        let polled = matches!(
+            sec.class,
+            AssetClass::Equity | AssetClass::Etf | AssetClass::Fx | AssetClass::Index | AssetClass::Cmdty
+        ) || (sec.class == AssetClass::Govt && tf.is_intraday());
+        if !polled {
+            return None;
+        }
+        let every = poll_interval(tf)?;
+        let yahoo = self.yahoo.clone();
+        let sym = yahoo_symbol(&sec);
+        let (tx, rx) = mpsc::channel(64);
+        rt::spawn(async move {
+            let mut tick = rt::interval(every);
+            tick.tick().await; // history was just loaded; the first poll is one interval later
+            while !tx.is_closed() {
+                tick.tick().await;
+                match yahoo.tail(&sym, tf).await {
+                    Ok(bars) => {
+                        for b in bars {
+                            if tx.send(b).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Err(e) => tracing::debug!("yahoo live poll {sym} {tf}: {e:#}"),
+                }
+            }
+        });
+        Some(rx)
     }
 
     async fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
@@ -167,6 +205,31 @@ impl MarketData for Markets {
 
     async fn yield_curves(&self) -> Result<YieldCurves> {
         self.treasury.curves().await
+    }
+}
+
+/// How often a polled live feed refetches the chart tail. Intraday bars move during the
+/// session; daily and longer bars at most once a day. `TR_LIVE_POLL_SECS` overrides the
+/// intraday cadence (0 disables polling). Yahoo rate-limits aggressive polling, so keep
+/// this well above the quote poll's floor.
+fn poll_interval(tf: Timeframe) -> Option<Duration> {
+    if let Ok(v) = std::env::var("TR_LIVE_POLL_SECS") {
+        let secs: u64 = v.parse().ok()?;
+        return (secs > 0).then(|| Duration::from_secs(secs));
+    }
+    Some(Duration::from_secs(if tf.is_intraday() { 30 } else { 300 }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poll_cadence_matches_the_timeframe() {
+        assert_eq!(poll_interval(Timeframe::M1), Some(Duration::from_secs(30)));
+        assert_eq!(poll_interval(Timeframe::M30), Some(Duration::from_secs(30)));
+        assert_eq!(poll_interval(Timeframe::D1), Some(Duration::from_secs(300)));
+        assert_eq!(poll_interval(Timeframe::W1), Some(Duration::from_secs(300)));
     }
 }
 

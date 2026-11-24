@@ -29,6 +29,16 @@ mod markets {
         Markets::new(None).unwrap()
     }
 
+    /// Equities have no push stream: the live feed polls Yahoo's chart tail.
+    #[tokio::test]
+    #[ignore = "network"]
+    async fn equity_live_feed_polls_the_chart_tail() {
+        let m = m();
+        let mut feed = m.live("NVDA US Equity", Timeframe::M30).expect("equity live feed");
+        let bar = tokio::time::timeout(Duration::from_secs(90), feed.recv()).await.expect("poll tick").unwrap();
+        assert!(bar.close > 0.0);
+    }
+
     #[tokio::test]
     #[ignore = "network"]
     async fn every_asset_class_has_history() {

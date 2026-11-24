@@ -366,6 +366,7 @@ impl PaneKind {
                 PaneKind::Macro(Box::new(crate::macro_view::MacroPane { indicator, range }))
             }
             PaneSettings::Search(q) => PaneKind::Search { query: q },
+            PaneSettings::Comd { query } => PaneKind::Search { query },
             PaneSettings::News(s) => PaneKind::News(Box::new(NewsPane::new(s))),
             PaneSettings::OrderBook { symbol, depth, group } => {
                 PaneKind::OrderBook(Box::new(BookPane::new(&symbol, depth, group)))
@@ -545,6 +546,8 @@ pub struct TerminalApp {
     watchlist: Vec<String>,
     quotes: HashMap<String, Quote>,
     last_quotes: Option<Instant>,
+    /// Consecutive quote failures; the poll intervals back off while Yahoo throttles.
+    quote_errors: u32,
     last_feed: Option<Instant>,
     last_save: Instant,
     started: Instant,
@@ -708,6 +711,7 @@ impl TerminalApp {
             watchlist: DEFAULT_WATCHLIST.map(String::from).to_vec(),
             quotes: HashMap::new(),
             last_quotes: None,
+            quote_errors: 0,
             last_feed: None,
             last_save: Instant::now(),
             started: Instant::now(),
@@ -905,6 +909,7 @@ impl TerminalApp {
                 self.open_panel(PaneKind::Alerts);
             }
             Function::Refresh => self.worker.send(Request::RefreshCongress),
+            Function::RefreshQuotes => self.refresh_quotes(),
             Function::Watchlist => self.open_panel(PaneKind::Watchlist),
             Function::WatchAdd(words) => {
                 for key in keys_from_words(&words) {
@@ -1097,6 +1102,12 @@ impl TerminalApp {
                     }
                 }
                 Response::Quotes { asked, quotes } => {
+                    if quotes.is_empty() && !asked.is_empty() {
+                        // Throttled or offline: back the poll intervals off for a while.
+                        self.quote_errors = (self.quote_errors + 1).min(3);
+                    } else {
+                        self.quote_errors = 0;
+                    }
                     if quotes.len() > 20 {
                         self.wei_updated = Some(format!("updated {}", chrono::Local::now().format("%H:%M:%S")));
                     }
@@ -1201,7 +1212,20 @@ impl TerminalApp {
                     self.macro_data = Some(m);
                     self.macro_loading = false;
                 }
-                Response::SearchHits { query, hits } => self.net_hits = (query, hits),
+                Response::SearchHits { query, hits } => {
+                    // Quote the visible hits so the search list can show live prices.
+                    let perps: Vec<&str> =
+                        self.live_perps.as_deref().unwrap_or(&[]).iter().map(String::as_str).collect();
+                    let keys: Vec<String> = markets_view::merged_hits(&query, &hits, &perps)
+                        .iter()
+                        .take(30)
+                        .map(|h| h.key.clone())
+                        .collect();
+                    if !keys.is_empty() {
+                        self.worker.send(Request::Quotes(keys));
+                    }
+                    self.net_hits = (query, hits);
+                }
                 Response::PerpMarkets(result) => {
                     let ok = result.is_ok();
                     match result {
@@ -1477,16 +1501,37 @@ impl TerminalApp {
         }
     }
 
+    /// Ask for every tracked quote right now: the manual Refresh in the quote panes.
+    fn refresh_quotes(&mut self) {
+        let mut keys = self.watchlist.clone();
+        for k in markets_view::overview_keys() {
+            if !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
+        self.quote_errors = 0;
+        self.worker.send(Request::Quotes(keys));
+        self.last_quotes = Some(Instant::now());
+        self.last_wei = Some(Instant::now());
+    }
+
     fn periodic(&mut self) {
         let visible = self.visible_panes();
         let shown = |f: &dyn Fn(&PaneKind) -> bool| visible.iter().any(|&i| f(&self.panes[i].kind));
         let visible_wl = self.sidebar_open || shown(&|k| matches!(k, PaneKind::Watchlist));
-        if visible_wl && self.last_quotes.is_none_or(|t| t.elapsed() > Duration::from_secs(20)) {
+        // Two quote lanes: the watchlist (sidebar or pane) is the fast lane; world markets
+        // and other panels are the slow lane, which also has a manual Refresh. Both back
+        // off (1s → 2s → 4s → 8s, capped) while the provider is failing or throttling.
+        let backoff = 1u64 << self.quote_errors.min(3);
+        let wl_poll =
+            Duration::from_millis(self.prefs.panels.watchlist_quote_ms.clamp(250, 300_000).saturating_mul(backoff))
+                .min(Duration::from_secs(30));
+        let panel_poll = Duration::from_secs((self.prefs.panels.panel_quote_secs.clamp(2, 300) * backoff).min(60));
+        if visible_wl && !self.watchlist.is_empty() && self.last_quotes.is_none_or(|t| t.elapsed() > wl_poll) {
             self.worker.send(Request::Quotes(self.watchlist.clone()));
             self.last_quotes = Some(Instant::now());
         }
-        if shown(&|k| matches!(k, PaneKind::Wei)) && self.last_wei.is_none_or(|t| t.elapsed() > Duration::from_secs(20))
-        {
+        if shown(&|k| matches!(k, PaneKind::Wei)) && self.last_wei.is_none_or(|t| t.elapsed() > panel_poll) {
             self.worker.send(Request::Quotes(markets_view::overview_keys()));
             self.last_wei = Some(Instant::now());
         }
@@ -1826,5 +1871,11 @@ mod tests {
         ] {
             assert_eq!(PaneKind::from_settings(s.clone()).settings(), s);
         }
+    }
+
+    #[test]
+    fn removed_commodity_pane_loads_as_a_search() {
+        let old: PaneSettings = serde_json::from_str(r#"{"Comd":{"query":"copper"}}"#).unwrap();
+        assert_eq!(PaneKind::from_settings(old).settings(), PaneSettings::Search("copper".into()));
     }
 }

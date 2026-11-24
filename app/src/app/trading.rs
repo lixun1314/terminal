@@ -237,6 +237,13 @@ fn caps_path() -> std::path::PathBuf {
     data_dir().join("trading-access.json")
 }
 
+/// Inner content width of the order-ticket window. Fixed, because the window is
+/// auto-sized: content that sizes itself from `ui.available_width()` makes the window
+/// chase its own width and creep wider on every repaint.
+pub(super) fn ticket_width() -> f32 {
+    dp(296.0)
+}
+
 #[derive(Default)]
 pub struct TradingState {
     pub ticket: Option<Ticket>,
@@ -998,6 +1005,9 @@ impl TerminalApp {
             .collapsible(false)
             .resizable(false)
             .default_width(dp(320.0))
+            // Pin the width: the auto-sized window must not grow as its content re-measures.
+            .min_width(dp(320.0))
+            .max_width(dp(320.0))
             .default_pos(ctx.content_rect().center() - egui::vec2(dp(160.0), dp(220.0)))
             .show(ctx, |ui| act = if hl { self.hl_ticket_ui(ui) } else { self.ticket_ui(ui) });
         self.sync_sell_all();
@@ -1083,10 +1093,9 @@ impl TerminalApp {
                 .and_then(|id| accounts.iter().find(|a| &a.id == id))
                 .map_or("Choose an account…".to_string(), account_line);
             ui.add_enabled_ui(!busy, |ui| {
-                egui::ComboBox::from_id_salt("ticket-account")
-                    .width(ui.available_width())
-                    .selected_text(current)
-                    .show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("ticket-account").width(ticket_width()).selected_text(current).show_ui(
+                    ui,
+                    |ui| {
                         for a in &accounts {
                             let cap = caps.get(&a.id).cloned().flatten();
                             let read_only = cap.as_ref().is_some_and(|c| !c.can_trade());
@@ -1100,7 +1109,8 @@ impl TerminalApp {
                             );
                             ui.selectable_value(&mut t.account, Some(a.id.clone()), label);
                         }
-                    });
+                    },
+                );
             });
             if accounts.is_empty() && !pf_loading {
                 ui.label(
@@ -1141,7 +1151,7 @@ impl TerminalApp {
 
         // Side: two large buttons.
         ui.horizontal(|ui| {
-            let w = (ui.available_width() - dp(6.0)) / 2.0;
+            let w = (ticket_width() - dp(6.0)) / 2.0;
             for (side, color) in [(Side::Buy, theme::up()), (Side::Sell, theme::down())] {
                 let on = t.side == side;
                 let b = if on {
@@ -1439,7 +1449,7 @@ impl TerminalApp {
         };
         let can = enabled && ready.is_ok() && blocker.is_none() && problem.is_none() && !busy;
         ui.horizontal(|ui| {
-            let b = filled(&label, fill, can).min_size(egui::vec2(ui.available_width() - dp(24.0), dp(30.0)));
+            let b = filled(&label, fill, can).min_size(egui::vec2(ticket_width() - dp(24.0), dp(30.0)));
             let reason = match &ready {
                 Err(e) => e.clone(),
                 Ok(_) if !enabled => "Live orders are off".into(),

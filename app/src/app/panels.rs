@@ -71,7 +71,7 @@ impl TerminalApp {
             PaneKind::Search { query } => {
                 let hits = if self.net_hits.0 == *query { self.net_hits.1.as_slice() } else { &[] };
                 let perps: Vec<&str> = perps.iter().map(String::as_str).collect();
-                let (a, changed) = markets_view::search(ui, query, hits, &perps);
+                let (a, changed) = markets_view::search(ui, query, hits, &perps, &self.quotes);
                 actions.extend(a);
                 if changed && query.trim().len() >= 2 {
                     self.search_pending = Some((query.clone(), Instant::now()));
@@ -239,9 +239,25 @@ impl TerminalApp {
                 });
             }
             ui.add_space(4.0);
-            ui.label(
-                RichText::new("WL ADD <KEY> to add · right-click a row for options").font(ui_font(11.0)).color(muted()),
-            );
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("WL ADD <KEY> to add · right-click a row for options")
+                        .font(ui_font(11.0))
+                        .color(muted()),
+                );
+                if ui.small_button("Refresh").on_hover_text("Reload quotes now (REFRESH QUOTES)").clicked() {
+                    out.push(Action::Command("REFRESH QUOTES".into()));
+                }
+                if self.quote_errors > 0 {
+                    let base = self.prefs.panels.watchlist_quote_ms.clamp(250, 300_000);
+                    let ms = base.saturating_mul(1 << self.quote_errors.min(3)).min(30_000);
+                    ui.label(
+                        RichText::new(format!("quotes throttled · retrying every {:.1}s", ms as f32 / 1000.0))
+                            .font(ui_font(11.0))
+                            .color(theme::down()),
+                    );
+                }
+            });
         });
         if let Some(s) = remove {
             self.watchlist.retain(|x| *x != s);

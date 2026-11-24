@@ -23,9 +23,10 @@ pub struct YahooProvider {
 
 impl YahooProvider {
     pub fn new() -> Result<Self> {
-        let client = reqwest::Client::builder()
+        let client = tr_core::http::client_builder()
             .tls_backend_rustls()
-            // Yahoo rejects requests without a browser-like user agent.
+            // Yahoo rejects requests without a browser-like user agent. Keep it modest:
+            // a full browser UA from a datacenter exit IP trips its bot throttling (429).
             .user_agent("Mozilla/5.0 (compatible; terminal)")
             .timeout(Duration::from_secs(20))
             .cookie_store(true)
@@ -33,23 +34,69 @@ impl YahooProvider {
         Ok(Self { client, crumb: tokio::sync::Mutex::new(None) })
     }
 
+    /// GET a Yahoo endpoint, retrying transient throttling (429/503) with backoff.
+    /// Yahoo's mainland-China block answers 403 with an HTML page; translate it into
+    /// an actionable error instead of a bare status.
+    async fn get_text(&self, what: &str, url: &str, query: &[(&str, String)]) -> Result<String> {
+        let mut backoff = Duration::from_secs(1);
+        for attempt in 0..3 {
+            let resp = self.client.get(url).query(query).send().await?;
+            let status = resp.status();
+            if status.is_success() {
+                return Ok(resp.text().await?);
+            }
+            let retry_after = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(Duration::from_secs);
+            let body = resp.text().await.unwrap_or_default();
+            if body.contains("mainland China") {
+                bail!(
+                    "yahoo {what}: blocked from mainland China; set TR_PROXY or write a proxy URL to proxy.txt in the data directory"
+                );
+            }
+            if matches!(status.as_u16(), 429 | 503) && attempt < 2 {
+                crate::rt::sleep(retry_after.unwrap_or(backoff).min(Duration::from_secs(10))).await;
+                backoff *= 2;
+                continue;
+            }
+            bail!("yahoo {what}: HTTP {status}");
+        }
+        unreachable!("the last attempt returns or bails")
+    }
+
     async fn chart(&self, symbol: &str, interval: &str, period1: i64, period2: i64) -> Result<Chart> {
         let url = format!("{BASE}/{}", urlencode(symbol));
-        let resp = self
-            .client
-            .get(&url)
-            .query(&[
-                ("interval", interval.to_string()),
-                ("period1", period1.to_string()),
-                ("period2", period2.to_string()),
-                ("includePrePost", "false".into()),
-            ])
-            .send()
+        let body = self
+            .get_text(
+                symbol,
+                &url,
+                &[
+                    ("interval", interval.to_string()),
+                    ("period1", period1.to_string()),
+                    ("period2", period2.to_string()),
+                    ("includePrePost", "false".into()),
+                ],
+            )
             .await?;
-        if !resp.status().is_success() {
-            bail!("yahoo {symbol}: HTTP {}", resp.status());
+        parse_chart(&body)
+    }
+
+    /// The newest bars from a short window ending now: the cheap refetch behind the
+    /// polling live feed for classes Yahoo has no push stream for.
+    pub async fn tail(&self, symbol: &str, tf: Timeframe) -> Result<Vec<Bar>> {
+        let now = chrono::Utc::now().timestamp();
+        let (iv, _) = interval(tf);
+        let base_tf = if tf == Timeframe::H4 { Timeframe::H1 } else { tf };
+        let factor = if tf == Timeframe::H4 { 4 } else { 1 };
+        let span = (base_tf.seconds() * factor * 12).max(3_600);
+        let mut bars = self.chart(symbol, iv, now - span, now + 60).await?.bars;
+        if matches!(tf, Timeframe::W1 | Timeframe::MN1 | Timeframe::H4) {
+            bars = tf.resample(&bars);
         }
-        parse_chart(&resp.text().await?)
+        Ok(bars)
     }
 }
 
@@ -189,16 +236,19 @@ impl MarketData for YahooProvider {
     }
 
     async fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
-        let resp = self
-            .client
-            .get(SEARCH)
-            .query(&[("q", query), ("quotesCount", "12"), ("newsCount", "0"), ("listsCount", "0")])
-            .send()
+        let body = self
+            .get_text(
+                "search",
+                SEARCH,
+                &[
+                    ("q", query.to_string()),
+                    ("quotesCount", "12".into()),
+                    ("newsCount", "0".into()),
+                    ("listsCount", "0".into()),
+                ],
+            )
             .await?;
-        if !resp.status().is_success() {
-            bail!("yahoo search: HTTP {}", resp.status());
-        }
-        parse_search(&resp.text().await?)
+        parse_search(&body)
     }
 }
 
@@ -213,7 +263,13 @@ impl YahooProvider {
             return Ok(c.clone());
         }
         // fc.yahoo.com answers 404 but sets the cookie; only transport errors matter.
-        self.client.get("https://fc.yahoo.com").send().await.context("yahoo session")?;
+        // Proxies reset connections now and then, so try twice before giving up.
+        let mut session = self.client.get("https://fc.yahoo.com").send().await;
+        if session.is_err() {
+            crate::rt::sleep(Duration::from_secs(1)).await;
+            session = self.client.get("https://fc.yahoo.com").send().await;
+        }
+        session.context("yahoo session")?;
         let resp = self.client.get("https://query2.finance.yahoo.com/v1/test/getcrumb").send().await?;
         let crumb = resp.text().await?.trim().to_string();
         if crumb.is_empty() || crumb.contains('{') || crumb.len() > 64 {
@@ -235,6 +291,11 @@ impl YahooProvider {
             let resp = self.client.get(format!("{OPTIONS}/{}", urlencode(symbol))).query(&q).send().await?;
             let status = resp.status();
             let body = resp.text().await?;
+            if body.contains("mainland China") {
+                bail!(
+                    "yahoo options: blocked from mainland China; set TR_PROXY or write a proxy URL to proxy.txt in the data directory"
+                );
+            }
             if status.as_u16() == 401 || body.contains("Invalid Crumb") {
                 last_err = Some(anyhow!("yahoo options: crumb rejected"));
                 continue;
@@ -249,16 +310,19 @@ impl YahooProvider {
 
     /// Headlines related to a Yahoo symbol or free-text query.
     pub async fn news(&self, query: &str) -> Result<Vec<crate::NewsItem>> {
-        let resp = self
-            .client
-            .get(SEARCH)
-            .query(&[("q", query), ("quotesCount", "0"), ("newsCount", "25"), ("listsCount", "0")])
-            .send()
+        let body = self
+            .get_text(
+                "news",
+                SEARCH,
+                &[
+                    ("q", query.to_string()),
+                    ("quotesCount", "0".into()),
+                    ("newsCount", "25".into()),
+                    ("listsCount", "0".into()),
+                ],
+            )
             .await?;
-        if !resp.status().is_success() {
-            bail!("yahoo news: HTTP {}", resp.status());
-        }
-        parse_news(&resp.text().await?)
+        parse_news(&body)
     }
 }
 
@@ -349,16 +413,14 @@ const SEARCH: &str = "https://query2.finance.yahoo.com/v1/finance/search";
 impl YahooProvider {
     /// Last price, previous close and the last few daily closes for each Yahoo symbol.
     pub async fn spark(&self, symbols: &[String]) -> Result<Vec<Quote>> {
-        let resp = self
-            .client
-            .get(SPARK)
-            .query(&[("symbols", symbols.join(",")), ("range", "10d".into()), ("interval", "1d".into())])
-            .send()
+        let body = self
+            .get_text(
+                "spark",
+                SPARK,
+                &[("symbols", symbols.join(",")), ("range", "10d".into()), ("interval", "1d".into())],
+            )
             .await?;
-        if !resp.status().is_success() {
-            bail!("yahoo spark: HTTP {}", resp.status());
-        }
-        parse_spark(&resp.text().await?)
+        parse_spark(&body)
     }
 }
 

@@ -258,6 +258,7 @@ impl TerminalApp {
                     (&["WEI"], "World markets overview"),
                     (&["GC"], "US Treasury yield curve"),
                     (&["MACRO", "MACRO REFRESH"], "US macro: GDP, M2, CPI, ISM PMI"),
+                    (&["REFRESH QUOTES"], "Reload watchlist and world-markets quotes now"),
                     (&["N", "AAPL CN"], "News headlines (for a security)"),
                     (&["OB", "BTCUSD CRNCY OB 50"], "Order book depth"),
                     (&["OMON", "AAPL OMON", "SPX INDEX OMON"], "Option chain: calls/puts by strike, IV, greeks"),

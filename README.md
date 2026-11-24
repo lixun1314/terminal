@@ -197,6 +197,13 @@ congress ingest covers the current and previous year (a few minutes; it runs in 
 while you work).
 `cargo run -p tr-congress --example ingest -- congress.sqlite3` runs one ingest from the CLI.
 
+Networking: Yahoo Finance geo-blocks mainland-China IPs (403) and answers 429 to
+HTTP/1.1-only clients; Senate eFD blocks some regions too. The app speaks HTTP/2 and follows
+the OS proxy settings (ClashX Pro etc.) and the standard `HTTPS_PROXY`/`ALL_PROXY` variables.
+`TR_PROXY=http://127.0.0.1:7890` (or `socks5://…`; `off` forces direct) overrides them, and a
+`proxy.txt` in the data directory holding one proxy URL is the durable option for GUI
+launches, which inherit no shell environment.
+
 Appearance: `TR_THEME=light|dark|<theme name>` overrides the saved theme, `TR_MSAA=1|2|4|8` sets
 chart anti-aliasing (default 4 on macOS), `TR_VIBRANCY=0` disables the translucent sidebar, and
 ⌃⌘S (Ctrl+Shift+S elsewhere) toggles the sidebar. `scripts/bundle-macos.sh` builds a retina-capable
