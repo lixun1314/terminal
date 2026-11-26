@@ -61,6 +61,24 @@ fn configured() -> Proxy {
     Proxy::Auto
 }
 
+/// First non-empty, non-comment line of a file in the data directory. Used for the
+/// TradingView session cookie (`tradingview.cookie`); callers must not log the value.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn config_line(name: &str) -> Option<String> {
+    let text = std::fs::read_to_string(data_dir().join(name)).ok()?;
+    text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_string)
+}
+
+/// The configured outbound proxy URL (`TR_PROXY` or `proxy.txt`), if any. The websocket
+/// client needs it explicitly (tungstenite does not read the OS proxy settings).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn proxy_url() -> Option<String> {
+    match configured() {
+        Proxy::Url(u) => Some(u),
+        _ => None,
+    }
+}
+
 /// A [`reqwest::ClientBuilder`] with the configured proxy applied. The browser build
 /// has no proxy choice; on the desktop the standard environment variables still apply
 /// when nothing is configured here.

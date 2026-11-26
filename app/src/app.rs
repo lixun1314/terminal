@@ -546,8 +546,12 @@ pub struct TerminalApp {
     watchlist: Vec<String>,
     quotes: HashMap<String, Quote>,
     last_quotes: Option<Instant>,
+    /// Delayed-source watchlist keys (indices/futures) poll on their own slower timer.
+    last_quotes_slow: Option<Instant>,
     /// Consecutive quote failures; the poll intervals back off while Yahoo throttles.
     quote_errors: u32,
+    /// When the last non-empty quote response arrived (`HH:MM:SS`), shown in the watchlist.
+    quotes_stamp: Option<String>,
     last_feed: Option<Instant>,
     last_save: Instant,
     started: Instant,
@@ -711,7 +715,9 @@ impl TerminalApp {
             watchlist: DEFAULT_WATCHLIST.map(String::from).to_vec(),
             quotes: HashMap::new(),
             last_quotes: None,
+            last_quotes_slow: None,
             quote_errors: 0,
+            quotes_stamp: None,
             last_feed: None,
             last_save: Instant::now(),
             started: Instant::now(),
@@ -731,6 +737,7 @@ impl TerminalApp {
             palette: crate::palette::Palette::load(&data_dir().join("palette.json")),
         };
         let mut doc = None;
+        app.sync_source_file();
         if let Some(s) = &settings {
             if !s.watchlist.is_empty() {
                 // Older settings stored bare tickers; normalise to market keys.
@@ -799,6 +806,21 @@ impl TerminalApp {
     fn save_prefs(&mut self) {
         if let Err(e) = self.prefs.save(&prefs_path()) {
             self.status = format!("Could not save preferences: {e}");
+        }
+        self.sync_source_file();
+    }
+
+    /// Mirror the data-source preference into `<data dir>/source.txt` for `tr-data`.
+    fn sync_source_file(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let p = data_dir().join("source.txt");
+            let v = self.prefs.panels.data_source.file_value();
+            if std::fs::read_to_string(&p).ok().as_deref().map(str::trim) != Some(v)
+                && let Err(e) = std::fs::write(&p, format!("{v}\n"))
+            {
+                tracing::warn!("source.txt: {e}");
+            }
         }
     }
 
@@ -1102,6 +1124,10 @@ impl TerminalApp {
                     }
                 }
                 Response::Quotes { asked, quotes } => {
+                    tracing::debug!("quotes: {} of {} asked", quotes.len(), asked.len());
+                    if !quotes.is_empty() {
+                        self.quotes_stamp = Some(chrono::Local::now().format("%H:%M:%S").to_string());
+                    }
                     if quotes.is_empty() && !asked.is_empty() {
                         // Throttled or offline: back the poll intervals off for a while.
                         self.quote_errors = (self.quote_errors + 1).min(3);
@@ -1527,9 +1553,32 @@ impl TerminalApp {
             Duration::from_millis(self.prefs.panels.watchlist_quote_ms.clamp(250, 300_000).saturating_mul(backoff))
                 .min(Duration::from_secs(30));
         let panel_poll = Duration::from_secs((self.prefs.panels.panel_quote_secs.clamp(2, 300) * backoff).min(60));
-        if visible_wl && !self.watchlist.is_empty() && self.last_quotes.is_none_or(|t| t.elapsed() > wl_poll) {
-            self.worker.send(Request::Quotes(self.watchlist.clone()));
+        // Split the watchlist by what the sources can actually do: crypto and (with a
+        // TradingView session) US equities/ETFs/FX/yields update per second, while delayed
+        // indices/futures only move every 10–15 minutes and poll on a slower timer.
+        let realtime = tr_data::fast_quote_source();
+        let (fast, slow): (Vec<String>, Vec<String>) = self.watchlist.iter().cloned().partition(|k| {
+            let c = tr_data::security(k).class;
+            matches!(c, tr_core::AssetClass::Crypto)
+                || (realtime
+                    && matches!(
+                        c,
+                        tr_core::AssetClass::Equity
+                            | tr_core::AssetClass::Etf
+                            | tr_core::AssetClass::Fx
+                            | tr_core::AssetClass::Govt
+                    ))
+        });
+        if visible_wl && !fast.is_empty() && self.last_quotes.is_none_or(|t| t.elapsed() > wl_poll) {
+            tracing::debug!("watchlist quotes: asking {} fast keys", fast.len());
+            self.worker.send(Request::Quotes(fast));
             self.last_quotes = Some(Instant::now());
+        }
+        let slow_poll = wl_poll.max(Duration::from_secs(60));
+        if visible_wl && !slow.is_empty() && self.last_quotes_slow.is_none_or(|t| t.elapsed() > slow_poll) {
+            tracing::debug!("watchlist quotes: asking {} delayed keys", slow.len());
+            self.worker.send(Request::Quotes(slow));
+            self.last_quotes_slow = Some(Instant::now());
         }
         if shown(&|k| matches!(k, PaneKind::Wei)) && self.last_wei.is_none_or(|t| t.elapsed() > panel_poll) {
             self.worker.send(Request::Quotes(markets_view::overview_keys()));
@@ -1840,7 +1889,8 @@ mod tests {
     /// it as current. Listed instruments keep theirs, as before.
     #[test]
     fn perps_left_out_of_an_answer_lose_their_old_quote() {
-        let q = |s: &str, last: f64| Quote { symbol: s.into(), last, prev_close: last, ts: 0, spark: vec![] };
+        let q =
+            |s: &str, last: f64| Quote { symbol: s.into(), last, prev_close: last, ts: 0, spark: vec![], ext: None };
         let mut shown: HashMap<String, Quote> =
             [q("xyz:AAPL", 336.0), q("xyz:GOLD", 3958.0), q("AAPL US Equity", 336.5)]
                 .map(|x| (x.symbol.clone(), x))

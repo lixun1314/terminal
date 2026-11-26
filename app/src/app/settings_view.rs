@@ -7,7 +7,7 @@ use tr_core::Timeframe;
 
 use super::TerminalApp;
 use super::workspace::LayoutOp;
-use crate::prefs::{Action, Density, MonoFont, UiFont};
+use crate::prefs::{Action, ChartTz, DataSource, Density, MonoFont, UiFont};
 use crate::theme::{self, muted, text, ui_font};
 use crate::themes::{self, Hex, SYSTEM, Theme};
 use crate::widgets;
@@ -603,6 +603,25 @@ impl TerminalApp {
             ui.checkbox(&mut d.show_volume, "Volume");
             ui.checkbox(&mut d.congress_markers, "Congress trade markers");
         });
+        row(ui, "Time zone", |ui| {
+            let labels: Vec<&str> = ChartTz::ALL.iter().map(|z| z.label()).collect();
+            let sel = ChartTz::ALL.iter().position(|z| *z == d.chart_tz);
+            if let Some(i) = widgets::segmented(ui, "chart-tz", &labels, sel, 22.0) {
+                d.chart_tz = ChartTz::ALL[i];
+            }
+        });
+        row(ui, "Data source", |ui| {
+            let labels: Vec<&str> = DataSource::ALL.iter().map(|s| s.label()).collect();
+            let sel = DataSource::ALL.iter().position(|s| *s == d.data_source);
+            if let Some(i) = widgets::segmented(ui, "data-source", &labels, sel, 22.0) {
+                d.data_source = DataSource::ALL[i];
+            }
+        });
+        ui.label(
+            RichText::new("Data source applies to new chart loads and quote polls (TradingView push/overlay, Tencent fallback, Yahoo polling).")
+                .font(ui_font(11.0))
+                .color(muted()),
+        );
         section(ui, "New order books");
         row(ui, "Depth (levels)", |ui| {
             let depths = [10usize, 20, 50];

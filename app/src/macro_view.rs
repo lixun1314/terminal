@@ -209,7 +209,9 @@ fn chart(ui: &mut Ui, d: &Snapshot, pane: &MacroPane) {
     }
     let ts: Vec<i64> = pts.iter().map(|q| q.ts).collect();
     let gap = (90.0 * pts.len() as f64 / plot.width() as f64).max(1.0);
-    for (j, label) in tr_chart::scale::time_ticks(&ts, 0, ts.len(), gap, tr_core::Timeframe::MN1) {
+    for (j, label) in
+        tr_chart::scale::time_ticks(&ts, 0, ts.len(), gap, tr_core::Timeframe::MN1, tr_chart::scale::Zone::Utc)
+    {
         let x = x_of(ts[j]);
         p.vline(x, plot.y_range(), Stroke::new(1.0, theme::grid()));
         p.text(pos2(x, plot.bottom() + 10.0), Align2::CENTER_CENTER, label, mono(10.5), theme::axis_text());

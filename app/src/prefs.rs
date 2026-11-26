@@ -171,6 +171,67 @@ impl Default for Appearance {
     }
 }
 
+/// Chart time-axis timezone preference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ChartTz {
+    /// The listing's exchange (US equities → New York, crypto → UTC).
+    #[default]
+    Exchange,
+    /// The machine's local timezone.
+    Local,
+    /// UTC, as the sources carry it.
+    Utc,
+}
+
+impl ChartTz {
+    pub const ALL: [ChartTz; 3] = [ChartTz::Exchange, ChartTz::Local, ChartTz::Utc];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ChartTz::Exchange => "Exchange",
+            ChartTz::Local => "Local",
+            ChartTz::Utc => "UTC",
+        }
+    }
+}
+
+/// Which market-data source the router prefers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DataSource {
+    /// TradingView push/overlay first, Tencent then Yahoo as fallbacks.
+    #[default]
+    Auto,
+    /// Pure Yahoo polling for US data (CN/HK equities keep their Tencent feed).
+    Yahoo,
+    /// Prefer TradingView push/overlay.
+    TradingView,
+    /// Alpaca (IEX realtime with keys): history, snapshots quotes and trade push.
+    Alpaca,
+}
+
+impl DataSource {
+    pub const ALL: [DataSource; 4] = [DataSource::Auto, DataSource::Yahoo, DataSource::TradingView, DataSource::Alpaca];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DataSource::Auto => "Auto",
+            DataSource::Yahoo => "Yahoo",
+            DataSource::TradingView => "TradingView",
+            DataSource::Alpaca => "Alpaca",
+        }
+    }
+
+    /// Value written to `<data dir>/source.txt` for the data crate to read.
+    pub fn file_value(self) -> &'static str {
+        match self {
+            DataSource::Auto => "auto",
+            DataSource::Yahoo => "yahoo",
+            DataSource::TradingView => "tv",
+            DataSource::Alpaca => "alpaca",
+        }
+    }
+}
+
 /// Defaults applied to newly created panels.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -180,6 +241,10 @@ pub struct PanelDefaults {
     pub show_volume: bool,
     pub congress_markers: bool,
     pub book_depth: usize,
+    /// Time axis: exchange time, local time or UTC.
+    pub chart_tz: ChartTz,
+    /// Preferred data source (Auto / Yahoo / TradingView).
+    pub data_source: DataSource,
     /// Watchlist quote poll interval in milliseconds: the fast lane (sidebar / watchlist
     /// pane). 500 ms is best-effort; failures back the poll off automatically.
     pub watchlist_quote_ms: u64,
@@ -195,6 +260,8 @@ impl Default for PanelDefaults {
             show_volume: true,
             congress_markers: true,
             book_depth: 20,
+            chart_tz: ChartTz::Exchange,
+            data_source: DataSource::Auto,
             watchlist_quote_ms: 1000,
             panel_quote_secs: 10,
         }

@@ -10,8 +10,9 @@
 //!
 //! HIP-3 perps come only from the Terminal server ([`crate::remote::RemoteMarkets`]).
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
@@ -19,9 +20,12 @@ use tokio::sync::mpsc;
 use tr_core::{AssetClass, Bar, Security, Timeframe, catalog};
 
 use crate::alpaca::AlpacaProvider;
+use crate::cn;
 use crate::crypto::CryptoProvider;
 use crate::rt;
+use crate::tradingview::TradingView;
 use crate::treasury::TreasuryProvider;
+use crate::tv_live;
 use crate::yahoo::{YahooProvider, yahoo_symbol};
 use crate::{
     LiveFeed, MarketData, NewsItem, OptionChain, OrderBook, Quote, SearchHit, YieldCurves, perp_needs_server, security,
@@ -31,6 +35,12 @@ pub struct Markets {
     yahoo: Arc<YahooProvider>,
     crypto: CryptoProvider,
     treasury: TreasuryProvider,
+    /// Fills quotes/search gaps when the primary sources fail (Yahoo blocked/throttled).
+    tv: Option<TradingView>,
+    /// Where each symbol's chart history last came from, so the live feed stays same-source.
+    hist_src: Mutex<HashMap<String, (Instant, HistSrc)>>,
+    /// Yahoo daily spark (sparkline + previous close), reused between fast price polls.
+    spark_cache: Mutex<HashMap<String, (Instant, Quote)>>,
     alpaca: Option<AlpacaProvider>,
     name: String,
 }
@@ -38,14 +48,48 @@ pub struct Markets {
 impl Markets {
     pub fn new(alpaca: Option<AlpacaProvider>) -> Result<Self> {
         let name = if alpaca.is_some() { "alpaca+yahoo+binance+ust" } else { "yahoo+binance+ust" }.to_string();
+        let tv = match TradingView::new() {
+            Ok(tv) => {
+                tracing::info!(
+                    "tradingview backup ready{}",
+                    if tv.cookie_configured() { " (session cookie: realtime US/FX)" } else { "" }
+                );
+                Some(tv)
+            }
+            Err(e) => {
+                tracing::warn!("tradingview backup unavailable: {e:#}");
+                None
+            }
+        };
         Ok(Self {
             yahoo: Arc::new(YahooProvider::new()?),
             crypto: CryptoProvider::new()?,
             treasury: TreasuryProvider::new()?,
+            tv,
+            hist_src: Mutex::new(HashMap::new()),
+            spark_cache: Mutex::new(HashMap::new()),
             alpaca,
             name,
         })
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HistSrc {
+    Tv,
+    Cn,
+    Alpaca,
+}
+
+/// Yahoo daily spark (sparkline + previous close) only needs refreshing this often; the
+/// realtime price comes from the overlay, so 1 s polls don't re-hit Yahoo every second.
+fn spark_ttl() -> Duration {
+    std::env::var("TR_SPARK_TTL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&s: &u64| s > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(60))
 }
 
 #[async_trait]
@@ -54,8 +98,59 @@ impl MarketData for Markets {
         &self.name
     }
 
+    fn realtime_quotes(&self) -> bool {
+        self.tv.as_ref().is_some_and(|t| t.cookie_configured())
+    }
+
     async fn history(&self, symbol: &str, tf: Timeframe, end: Option<i64>, limit: usize) -> Result<Vec<Bar>> {
         let sec = security(symbol);
+        // Source-consistent charts: a symbol using TV push also loads its history from TV.
+        if tv_live::push_enabled() && tv_live::eligible(&sec) {
+            if end.is_some() {
+                return Ok(Vec::new()); // one-shot TV history has no older pages
+            }
+            match tv_live::history(&sec, tf, limit).await {
+                Ok(b) if !b.is_empty() => {
+                    tracing::debug!("tv history ok {} {tf} ({} bars)", sec.ticker, b.len());
+                    self.hist_src.lock().expect("hist src").insert(sec.key(), (Instant::now(), HistSrc::Tv));
+                    return Ok(b);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!("tv history {} {tf}: {e:#}", sec.ticker),
+            }
+        }
+        // Tencent fallback (A/HK equities and indices; shared data directory, no key).
+        if cn::is_cn(&sec) && !(sec.class == AssetClass::Index && crate::source_pref() == crate::SourcePref::Yahoo) {
+            if end.is_some() {
+                return Ok(Vec::new()); // the Tencent feed has no older pages
+            }
+            match cn::history(&sec, tf, limit).await {
+                Ok(b) if !b.is_empty() => {
+                    self.hist_src.lock().expect("hist src").insert(sec.key(), (Instant::now(), HistSrc::Cn));
+                    return Ok(b);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!("cn history {} {tf}: {e:#}", sec.ticker),
+            }
+        }
+        // Alpaca source: same-provider history for US equities/ETFs.
+        if let Some(a) = self.alpaca.as_ref()
+            && crate::source_pref() == crate::SourcePref::Alpaca
+            && matches!(sec.class, AssetClass::Equity | AssetClass::Etf)
+            && !cn::is_cn(&sec)
+        {
+            if end.is_some() {
+                return Ok(Vec::new());
+            }
+            match a.history(&sec.ticker, tf, None, limit).await {
+                Ok(b) if !b.is_empty() => {
+                    self.hist_src.lock().expect("hist src").insert(sec.key(), (Instant::now(), HistSrc::Alpaca));
+                    return Ok(b);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!("alpaca history {} {tf}: {e:#}", sec.ticker),
+            }
+        }
         match sec.class {
             AssetClass::Perp => Err(perp_needs_server(symbol)),
             AssetClass::Crypto => self.crypto.history(&sec, tf, end, limit).await,
@@ -76,44 +171,151 @@ impl MarketData for Markets {
     }
 
     async fn quotes(&self, symbols: &[String]) -> Result<Vec<Quote>> {
-        let (mut crypto, mut govt, mut other) = (Vec::new(), Vec::new(), Vec::new());
+        let use_alpaca = crate::source_pref() == crate::SourcePref::Alpaca && self.alpaca.is_some();
+        let (mut crypto, mut govt, mut other, mut cnv, mut alp) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for key in symbols {
             let sec = security(key);
             match sec.class {
                 AssetClass::Perp => {}
                 AssetClass::Crypto => crypto.push((key.clone(), sec)),
                 AssetClass::Govt => govt.push((key.clone(), sec)),
+                AssetClass::Equity | AssetClass::Etf if use_alpaca && !cn::is_cn(&sec) => alp.push(key.clone()),
+                AssetClass::Equity if cn::is_cn(&sec) => cnv.push(key.clone()),
                 _ => other.push((key.clone(), sec)),
             }
         }
-        let (c, g, y) = tokio::join!(
+        let (c, g, y, cnq, ap) = tokio::join!(
             async { if crypto.is_empty() { Ok(vec![]) } else { self.crypto.quotes(&crypto).await } },
             async { if govt.is_empty() { Ok(vec![]) } else { self.treasury.quotes(&govt).await } },
+            async { if cnv.is_empty() { Ok(vec![]) } else { cn::quotes(&cnv).await } },
+            async {
+                let (Some(a), false) = (&self.alpaca, alp.is_empty()) else { return Ok(vec![]) };
+                match a.quotes(&alp).await {
+                    Ok(q) if !q.is_empty() => {
+                        tracing::debug!("alpaca: {} quote(s)", q.len());
+                        Ok(q)
+                    }
+                    // Never leave equity rows blank when Alpaca is unreachable: fill via Yahoo.
+                    _ => {
+                        let ys: Vec<String> = alp.iter().map(|k| yahoo_symbol(&security(k))).collect();
+                        let quotes = self.yahoo.quotes(&ys).await?;
+                        Ok(alp
+                            .iter()
+                            .zip(&ys)
+                            .filter_map(|(k, y)| {
+                                quotes.iter().find(|q| &q.symbol == y).map(|q| Quote { symbol: k.clone(), ..q.clone() })
+                            })
+                            .collect())
+                    }
+                }
+            },
             async {
                 if other.is_empty() {
                     return Ok(vec![]);
                 }
-                let ys: Vec<String> = other.iter().map(|(_, s)| yahoo_symbol(s)).collect();
-                let quotes = self.yahoo.quotes(&ys).await?;
-                // Map Yahoo symbols back to the caller's market keys.
-                Ok::<_, anyhow::Error>(
-                    other
-                        .iter()
-                        .zip(&ys)
-                        .filter_map(|((key, _), y)| {
-                            quotes.iter().find(|q| &q.symbol == y).map(|q| Quote { symbol: key.clone(), ..q.clone() })
-                        })
-                        .collect(),
-                )
+                // Reuse the daily spark between fast polls; only stale keys re-hit Yahoo.
+                let ttl = spark_ttl();
+                let mut out = Vec::new();
+                let mut stale: Vec<(String, Security)> = Vec::new();
+                {
+                    let cache = self.spark_cache.lock().expect("spark cache");
+                    for (key, sec) in &other {
+                        match cache.get(key) {
+                            Some((at, q)) if at.elapsed() < ttl => out.push(q.clone()),
+                            _ => stale.push((key.clone(), sec.clone())),
+                        }
+                    }
+                }
+                if !stale.is_empty() {
+                    let ys: Vec<String> = stale.iter().map(|(_, s)| yahoo_symbol(s)).collect();
+                    match self.yahoo.quotes(&ys).await {
+                        Ok(quotes) => {
+                            let mut cache = self.spark_cache.lock().expect("spark cache");
+                            for ((key, _), y) in stale.iter().zip(&ys) {
+                                if let Some(q) = quotes.iter().find(|q| &q.symbol == y) {
+                                    let q = Quote { symbol: key.clone(), ..q.clone() };
+                                    cache.insert(key.clone(), (Instant::now(), q.clone()));
+                                    out.push(q);
+                                }
+                            }
+                        }
+                        // Keep whatever the cache already holds rather than losing the panel.
+                        Err(e) if out.is_empty() => return Err(e),
+                        Err(e) => tracing::debug!("yahoo spark refresh failed, using cache: {e:#}"),
+                    }
+                }
+                Ok::<_, anyhow::Error>(out)
             }
         );
         let mut out = Vec::new();
         let mut errors = Vec::new();
-        for r in [c, g, y] {
+        for r in [c, g, y, cnq, ap] {
             match r {
                 Ok(q) => out.extend(q),
                 Err(e) => errors.push(format!("{e:#}")),
             }
+        }
+        // TradingView does two jobs here: it fills keys the primary sources left out, and —
+        // with a logged-in session — it overlays realtime prices for US equities/ETFs, FX
+        // and Treasury yields. Its futures and the headline index stay delayed, so those
+        // keep the primary quote (and its sparkline).
+        if let Some(tv) = &self.tv
+            && !matches!(crate::source_pref(), crate::SourcePref::Yahoo | crate::SourcePref::Alpaca)
+        {
+            let realtime = tv.cookie_configured();
+            let ext = crate::tradingview::extended_session_now();
+            let wanted: Vec<String> = symbols
+                .iter()
+                .filter(|k| {
+                    let class = security(k).class;
+                    (realtime
+                        && matches!(class, AssetClass::Equity | AssetClass::Etf | AssetClass::Fx | AssetClass::Govt))
+                        || (ext.is_some() && matches!(class, AssetClass::Equity | AssetClass::Etf))
+                        || !out.iter().any(|q| &q.symbol == *k)
+                })
+                .cloned()
+                .collect();
+            if !wanted.is_empty() {
+                match tv.quotes(&wanted).await {
+                    Ok(fetched) => {
+                        if !fetched.is_empty() {
+                            tracing::debug!("tradingview: {} quote(s) for {} key(s)", fetched.len(), wanted.len());
+                        }
+                        for q in fetched {
+                            match out.iter_mut().find(|o| o.symbol == q.symbol) {
+                                // Keep the primary sparkline while taking the fresh price.
+                                Some(slot) if realtime => {
+                                    let spark = std::mem::take(&mut slot.spark);
+                                    *slot = Quote { spark, ..q };
+                                }
+                                // Outside a session with no realtime entitlement: only the
+                                // extended print is newer than the primary quote.
+                                Some(slot) => {
+                                    if q.ext.is_some() {
+                                        slot.ext = q.ext;
+                                    }
+                                }
+                                None => out.push(q),
+                            }
+                        }
+                    }
+                    Err(e) => errors.push(format!("tradingview: {e:#}")),
+                }
+            }
+        }
+        // Tencent index fallback: fill index quotes the primary left out (VIX stays on Yahoo,
+        // where Tencent's feed is stale).
+        let missing_idx: Vec<String> = symbols
+            .iter()
+            .filter(|k| security(k).class == AssetClass::Index && !out.iter().any(|q| &q.symbol == *k))
+            .cloned()
+            .collect();
+        if !missing_idx.is_empty()
+            && crate::source_pref() != crate::SourcePref::Yahoo
+            && let Ok(q) = cn::quotes(&missing_idx).await
+        {
+            out.extend(q);
         }
         if out.is_empty() && !errors.is_empty() {
             return Err(anyhow!(errors.join("; ")));
@@ -125,6 +327,49 @@ impl MarketData for Markets {
         let sec = security(symbol);
         if sec.class == AssetClass::Crypto {
             return Some(CryptoProvider::live(&sec, tf));
+        }
+        if sec.class == AssetClass::Equity && cn::is_cn(&sec) {
+            return Some(cn::live(&sec, tf));
+        }
+        // Alpaca source: realtime IEX trades push for the same-provider history.
+        if crate::source_pref() == crate::SourcePref::Alpaca
+            && matches!(sec.class, AssetClass::Equity | AssetClass::Etf)
+            && !cn::is_cn(&sec)
+        {
+            let same_source = self
+                .hist_src
+                .lock()
+                .expect("hist src")
+                .get(&sec.key())
+                .is_some_and(|(t, s)| t.elapsed() < Duration::from_secs(6 * 3600) && *s == HistSrc::Alpaca);
+            if same_source {
+                if !tf.is_intraday() {
+                    return None; // daily charts stay static between reloads
+                }
+                if let Some(a) = &self.alpaca
+                    && let Some(feed) = a.live(&sec, tf)
+                {
+                    return Some(feed);
+                }
+            }
+        }
+        // TradingView push for everything it serves (stocks realtime with a session; indices
+        // and futures delayed-but-pushed, like the TradingView web chart). Same-source only.
+        if tv_live::push_enabled() && tv_live::eligible(&sec) {
+            let src = self
+                .hist_src
+                .lock()
+                .expect("hist src")
+                .get(&sec.key())
+                .filter(|(t, _)| t.elapsed() < Duration::from_secs(6 * 3600))
+                .map(|(_, s)| *s);
+            let allow_tv = src == Some(HistSrc::Tv);
+            // Tencent is a fallback for A/HK equities and indices as long as the chart did
+            // not come from TradingView and the Yahoo-only source is not selected.
+            let allow_cn = crate::source_pref() != crate::SourcePref::Yahoo
+                && src != Some(HistSrc::Tv)
+                && matches!(sec.class, AssetClass::Equity | AssetClass::Etf | AssetClass::Index);
+            return Some(tv_live::feed(&sec, tf, allow_tv, allow_cn));
         }
         // Yahoo has no push stream for these classes, so poll the chart tail and let the
         // worker's live merge keep the chart current while the market trades.
@@ -160,7 +405,14 @@ impl MarketData for Markets {
     }
 
     async fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
-        self.yahoo.search(query).await
+        let primary = self.yahoo.search(query).await;
+        if primary.as_ref().is_ok_and(|h| !h.is_empty()) {
+            return primary;
+        }
+        match &self.tv {
+            Some(tv) => tv.search(query).await.or(primary),
+            None => primary,
+        }
     }
 
     async fn news(&self, symbol: Option<&str>) -> Result<Vec<NewsItem>> {

@@ -26,7 +26,8 @@ impl TerminalApp {
         if let PaneKind::Chart(c) = &mut self.panes[i].kind {
             c.hover_enabled = !dragging;
             c.switch_to = switch_to;
-            let clicked = c.show(ui, rect, focused, &self.worker);
+            let zone = c.zone(self.prefs.panels.chart_tz);
+            let clicked = c.show(ui, rect, focused, &self.worker, zone);
             actions.append(&mut c.actions);
             return (actions, clicked);
         }
@@ -169,36 +170,52 @@ impl TerminalApp {
                 let tick = p.layout_no_wrap(sec.ticker.clone(), mono(12.5), amber());
                 let label_x = col(r, 0) + tick.size().x.max(66.0) + 8.0;
                 p.galley(pos2(col(r, 0), r.center().y - tick.size().y / 2.0), tick, amber());
+                let quote = self.quotes.get(s);
                 let (label, lc) = match sec.class {
                     tr_core::AssetClass::Perp => (tr_core::perps::badge(s), theme::perp()),
                     c => (c.yellow_key().label().to_string(), muted()),
                 };
+                let label = match quote.and_then(|q| q.ext) {
+                    Some(e) => format!("{label} {}", e.label()),
+                    None => label,
+                };
                 p.text(pos2(label_x, r.center().y), Align2::LEFT_CENTER, label, ui_font(11.0), lc);
-                match self.quotes.get(s) {
+                match quote {
                     Some(q) => {
-                        let c = if q.change() >= 0.0 { theme::up() } else { theme::down() };
-                        let d = sec.decimals(q.last);
+                        // After the bell, show the extended-hours print and its move.
+                        let (last, chg, pct, up) = match q.ext {
+                            Some(e) => (e.price, e.change, e.change_pct, e.change >= 0.0),
+                            None => (q.last, q.change(), q.change_pct(), q.change() >= 0.0),
+                        };
+                        let c = if up { theme::up() } else { theme::down() };
+                        let d = sec.decimals(last);
                         p.text(
                             pos2(col(r, 2), r.center().y),
                             Align2::RIGHT_CENTER,
-                            format!("{:.d$}", q.last),
+                            format!("{:.d$}", last),
                             mono(12.5),
                             text(),
                         );
-                        p.text(
-                            pos2(col(r, 3), r.center().y),
-                            Align2::RIGHT_CENTER,
-                            markets_view::change_text(&sec, q),
-                            mono(12.5),
-                            c,
-                        );
+                        let change =
+                            if q.ext.is_some() { format!("{chg:+.2}") } else { markets_view::change_text(&sec, q) };
+                        p.text(pos2(col(r, 3), r.center().y), Align2::RIGHT_CENTER, change, mono(12.5), c);
                         p.text(
                             pos2(col(r, 4), r.center().y),
                             Align2::RIGHT_CENTER,
-                            format!("{:+.2}%", q.change_pct()),
+                            format!("{pct:+.2}%"),
                             mono(12.5),
                             c,
                         );
+                        if let Some(e) = q.ext {
+                            resp.clone().on_hover_text(format!(
+                                "Regular {:.d$} ({:+.2}%) · {} {:.d$} ({:+.2}%)",
+                                q.last,
+                                q.change_pct(),
+                                e.label(),
+                                e.price,
+                                e.change_pct
+                            ));
+                        }
                     }
                     None => {
                         p.text(pos2(col(r, 4), r.center().y), Align2::RIGHT_CENTER, "…", mono(12.5), muted());
@@ -255,6 +272,15 @@ impl TerminalApp {
                         RichText::new(format!("quotes throttled · retrying every {:.1}s", ms as f32 / 1000.0))
                             .font(ui_font(11.0))
                             .color(theme::down()),
+                    );
+                } else if let Some(t) = &self.quotes_stamp {
+                    ui.label(
+                        RichText::new(format!(
+                            "quotes {t} · {:.1}s lane",
+                            self.prefs.panels.watchlist_quote_ms.clamp(250, 300_000) as f32 / 1000.0
+                        ))
+                        .font(ui_font(10.5))
+                        .color(muted()),
                     );
                 }
             });

@@ -86,17 +86,38 @@ gets the native title bar with traffic lights, window vibrancy behind the sideba
   | Crypto | Binance public REST (`data-api.binance.vision`, then `api.binance.com`), Coinbase Exchange fallback | Binance 24h ticker | Binance kline websocket, Coinbase ticker fallback |
   | US Treasuries | Treasury.gov daily par yield curve CSV (FRED fallback); Yahoo `^IRX/^FVX/^TNX/^TYX` intraday | Treasury.gov | — |
   | FX, indices, futures | Yahoo Finance (`EURUSD=X`, `^GSPC`, `CL=F`) | Yahoo spark (batched) | — |
-  | Stocks, ETFs | Alpaca when `APCA_API_KEY_ID`/`APCA_API_SECRET_KEY` are set, else Yahoo | Yahoo spark | — |
+  | Stocks, ETFs | Alpaca when `APCA_API_KEY_ID`/`APCA_API_SECRET_KEY` are set, else Yahoo | Alpaca snapshots (IEX) or Yahoo spark | Alpaca trades websocket (IEX) |
   | Hyperliquid HIP-3 perps (`xyz:AAPL`, `xyz:GOLD`, `xyz:EUR`) | The Terminal data server only (`TR_SERVER_URL`) | Server mids | Server candles, book and trades |
+  | TradingView (backup) | — | `scanner.tradingview.com` batch; fills gaps when Yahoo fails | — |
+  | China A-shares / HK | Tencent fqkline/mkline (Sina fallback), GBK | Tencent ~3 s batch, no key | Tencent ~3 s poll |
+  | US/CN/HK index fallback | Tencent daily K-line | Tencent quotes when Yahoo misses the index (VIX excluded: stale there) | Tencent ~3 s |
+
+  **TradingView backup** — quotes and search fall back to TradingView's scanner when Yahoo fails
+  or leaves a symbol out; with a logged-in session it also overlays realtime prices for US
+  equities/ETFs, FX and Treasury yields (indices and futures stay 10–15 minutes delayed there).
+  Outside the regular session the watchlist and world-markets rows switch to the pre/post print
+  with a `PRE`/`AH` badge (hover shows the regular close).
+  Put `sessionid=…; sessionid_sign=…` on one line in `<data dir>/tradingview.cookie` (mode 0600)
+  or set `TR_TV_COOKIE`; without it TradingView quotes are delayed too. It is an undocumented
+  private API, used as a personal fallback only (no redistribution) — see TradingView's terms.
 
   A HIP-3 perp is its own instrument, labelled `PERP · HL xyz` everywhere. `AAPL US Equity` stays the
   listed stock. `AAPL PERP` opens the perp linked to it, and `PERP` or ⇧P switches back and forth.
   A perp has no other source, so it never gets sample data; without the server it shows why.
 
   No keys are required. `TR_PROVIDER=sample` runs fully offline on deterministic, class-aware sample
-  data (BTCUSD near 65,000, EURUSD near 1.09, US10Y near 4.2%) **with simulated live ticks**, and
-  the live router falls back to sample data when a source is unreachable. Bars are cached in SQLite
+  data (BTCUSD near 65,000, EURUSD near 1.09, US10Y near 4.2%) **with simulated live ticks**.
+  The silent sample fallback for a live source is off by default (`TR_SAMPLE_FALLBACK=1` re-enables
+  it) because synthetic bars must never be cached next to real ones. Bars are cached in SQLite
   so charts paint from disk on start. Older history pages in as you scroll left.
+- **Chart time axis** — follows the listing's exchange by default (US equities → New York, ICE
+  softs → London, Asian indices → their market, crypto → UTC). Settings › Panels › Time zone
+  switches between Exchange, Local and UTC, and the axis plus the crosshair tag the zone
+  (`EST`, `CST`, `UTC`…).
+- **US equity/ETF chart push** — the K-line live feed uses TradingView's chart websocket (realtime
+  with a session cookie, delayed without), falling back to Tencent ~3 s quotes and then Yahoo's
+  30 s tail poll. This is the same push protocol the TradingView web chart uses; Yahoo REST alone
+  has no push channel.
 - **Congress trades** (key feature)
   - Ingests Periodic Transaction Reports from the **Senate eFD** (efdsearch.senate.gov: agreement
     + CSRF session, DataTables search API, HTML transaction tables) and the **House Clerk**
@@ -202,7 +223,16 @@ HTTP/1.1-only clients; Senate eFD blocks some regions too. The app speaks HTTP/2
 the OS proxy settings (ClashX Pro etc.) and the standard `HTTPS_PROXY`/`ALL_PROXY` variables.
 `TR_PROXY=http://127.0.0.1:7890` (or `socks5://…`; `off` forces direct) overrides them, and a
 `proxy.txt` in the data directory holding one proxy URL is the durable option for GUI
-launches, which inherit no shell environment.
+launches, which inherit no shell environment. The websocket clients (TradingView push,
+Binance, the Terminal server) use the same proxy through an HTTP CONNECT tunnel.
+
+`TR_PUSH=yahoo` disables the TradingView push source (charts then poll Yahoo); `TR_PUSH`
+defaults to `auto`. Tencent supplies a free fallback for A/HK equities and for US/CN/HK
+index quotes when the primary misses them. Settings › Panels › Data source selects
+Auto / Yahoo / TradingView / Alpaca; Alpaca needs `APCA_API_KEY_ID` +
+`APCA_API_SECRET_KEY` (`APCA_DATA_FEED=iex` is realtime, `sip` is delayed on the free tier).
+Environment variables in `~/.zshrc` reach terminal launches; for Dock launches run
+`launchctl setenv APCA_API_KEY_ID …` (same for the secret) or start the app from a shell.
 
 Appearance: `TR_THEME=light|dark|<theme name>` overrides the saved theme, `TR_MSAA=1|2|4|8` sets
 chart anti-aliasing (default 4 on macOS), `TR_VIBRANCY=0` disables the translucent sidebar, and

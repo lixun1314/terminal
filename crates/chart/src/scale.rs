@@ -1,7 +1,8 @@
 //! Axis tick generation: "nice" price steps and calendar-aware time labels.
 
-use chrono::{DateTime, Datelike, Timelike, Utc};
-use tr_core::Timeframe;
+use chrono::{DateTime, Datelike, Local, NaiveDateTime, Timelike, Utc};
+use chrono_tz::Tz;
+use tr_core::{AssetClass, Timeframe};
 
 /// Round step for ~`target` ticks across `[lo, hi]` (1, 2, 2.5, 5 x 10^n).
 pub fn nice_step(lo: f64, hi: f64, target: usize) -> f64 {
@@ -88,8 +89,71 @@ fn dt(ts: i64) -> DateTime<Utc> {
     DateTime::from_timestamp(ts, 0).unwrap_or_default()
 }
 
-pub fn boundary(prev: i64, cur: i64) -> Boundary {
-    let (a, b) = (dt(prev), dt(cur));
+/// Display timezone for the time axis and the crosshair label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Zone {
+    /// No conversion (the timestamps as the source carries them).
+    Utc,
+    /// The machine's local timezone.
+    Local,
+    /// A named timezone following its DST rules (e.g. `America/New_York`).
+    Tz(Tz),
+}
+
+impl Zone {
+    fn naive(self, ts: i64) -> NaiveDateTime {
+        let d = dt(ts);
+        match self {
+            Zone::Utc => d.naive_utc(),
+            Zone::Local => d.with_timezone(&Local).naive_local(),
+            Zone::Tz(tz) => d.with_timezone(&tz).naive_local(),
+        }
+    }
+
+    /// The zone's short name at `ts` (`UTC`, `EST`, `CST`…), for axis tags.
+    pub fn abbrev(self, ts: i64) -> String {
+        let d = dt(ts);
+        match self {
+            Zone::Utc => "UTC".into(),
+            Zone::Local => d.with_timezone(&Local).format("%Z").to_string(),
+            Zone::Tz(tz) => d.with_timezone(&tz).format("%Z").to_string(),
+        }
+    }
+}
+
+/// The listing's exchange timezone for the "exchange" chart-timezone preference: US by
+/// convention, with international indices and ICE softs on their own markets.
+pub fn exchange_zone(ticker: &str, class: AssetClass) -> Zone {
+    use chrono_tz::{America, Asia, Europe};
+    let tz = match class {
+        AssetClass::Crypto | AssetClass::Perp => return Zone::Utc,
+        AssetClass::Equity | AssetClass::Etf | AssetClass::Govt | AssetClass::Fx => America::New_York,
+        AssetClass::Cmdty => match ticker {
+            "KC1" | "CT1" | "SB1" | "CC1" | "OJ1" => Europe::London,
+            _ => America::New_York,
+        },
+        AssetClass::Index => match ticker {
+            "UKX" => Europe::London,
+            "DAX" => Europe::Berlin,
+            "CAC" | "SX5E" => Europe::Paris,
+            "SMI" => Europe::Zurich,
+            "IBEX" => Europe::Madrid,
+            "FTSEMIB" => Europe::Rome,
+            "NKY" => Asia::Tokyo,
+            "HSI" => Asia::Hong_Kong,
+            "SHCOMP" => Asia::Shanghai,
+            "KOSPI" => Asia::Seoul,
+            "SPTSX" => America::Toronto,
+            "IBOV" => America::Sao_Paulo,
+            "MEXBOL" => America::Mexico_City,
+            _ => America::New_York,
+        },
+    };
+    Zone::Tz(tz)
+}
+
+pub fn boundary(prev: i64, cur: i64, zone: Zone) -> Boundary {
+    let (a, b) = (zone.naive(prev), zone.naive(cur));
     if a.year() != b.year() {
         Boundary::Year
     } else if a.month() != b.month() {
@@ -105,8 +169,8 @@ pub fn boundary(prev: i64, cur: i64) -> Boundary {
     }
 }
 
-pub fn label(ts: i64, b: Boundary, tf: Timeframe) -> String {
-    let d = dt(ts);
+pub fn label(ts: i64, b: Boundary, tf: Timeframe, zone: Zone) -> String {
+    let d = zone.naive(ts);
     match b {
         Boundary::Year => d.format("%Y").to_string(),
         Boundary::Month => d.format("%b").to_string(),
@@ -116,22 +180,36 @@ pub fn label(ts: i64, b: Boundary, tf: Timeframe) -> String {
     }
 }
 
-/// Full timestamp for crosshair labels.
-pub fn crosshair_label(ts: i64, tf: Timeframe) -> String {
-    let d = dt(ts);
-    if tf.is_intraday() { d.format("%a %d %b '%y %H:%M").to_string() } else { d.format("%a %d %b '%y").to_string() }
+/// Full timestamp for crosshair labels, with the zone's short name.
+pub fn crosshair_label(ts: i64, tf: Timeframe, zone: Zone) -> String {
+    let d = zone.naive(ts);
+    let tz = zone.abbrev(ts);
+    if tf.is_intraday() {
+        format!("{} {tz}", d.format("%a %d %b '%y %H:%M"))
+    } else {
+        format!("{} {tz}", d.format("%a %d %b '%y"))
+    }
 }
 
 /// Choose labelled bars among `times[lo..hi]`, preferring higher boundaries, with at least
 /// `min_gap_bars` between labels. Returns `(index, label)` pairs in ascending order.
-pub fn time_ticks(times: &[i64], lo: usize, hi: usize, min_gap_bars: f64, tf: Timeframe) -> Vec<(usize, String)> {
+pub fn time_ticks(
+    times: &[i64],
+    lo: usize,
+    hi: usize,
+    min_gap_bars: f64,
+    tf: Timeframe,
+    zone: Zone,
+) -> Vec<(usize, String)> {
     let hi = hi.min(times.len());
     if lo >= hi {
         return Vec::new();
     }
     let gap = min_gap_bars.max(1.0).ceil() as usize;
-    let mut cands: Vec<(Boundary, usize)> =
-        (lo.max(1)..hi).map(|i| (boundary(times[i - 1], times[i]), i)).filter(|(b, _)| *b > Boundary::None).collect();
+    let mut cands: Vec<(Boundary, usize)> = (lo.max(1)..hi)
+        .map(|i| (boundary(times[i - 1], times[i], zone), i))
+        .filter(|(b, _)| *b > Boundary::None)
+        .collect();
     // Higher boundaries first; within a level, keep chronological order.
     cands.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     let mut chosen: Vec<(usize, Boundary)> = Vec::new();
@@ -144,7 +222,7 @@ pub fn time_ticks(times: &[i64], lo: usize, hi: usize, min_gap_bars: f64, tf: Ti
         }
     }
     chosen.sort_by_key(|(i, _)| *i);
-    chosen.into_iter().map(|(i, b)| (i, label(times[i], b, tf))).collect()
+    chosen.into_iter().map(|(i, b)| (i, label(times[i], b, tf, zone))).collect()
 }
 
 #[cfg(test)]
@@ -184,9 +262,25 @@ mod tests {
         // Daily bars across 3 months.
         let start = 1_767_225_600; // 2026-01-01
         let times: Vec<i64> = (0..90).map(|i| start + i * 86_400).collect();
-        let ticks = time_ticks(&times, 0, 90, 20.0, Timeframe::D1);
+        let ticks = time_ticks(&times, 0, 90, 20.0, Timeframe::D1, Zone::Utc);
         let labels: Vec<&str> = ticks.iter().map(|(_, l)| l.as_str()).collect();
         assert!(labels.contains(&"Feb") && labels.contains(&"Mar"), "{labels:?}");
         assert!(ticks.windows(2).all(|w| w[1].0 - w[0].0 >= 20));
+    }
+
+    #[test]
+    fn exchange_time_with_dst_and_zone_tags() {
+        let ts = DateTime::parse_from_rfc3339("2026-11-24T15:24:00Z").unwrap().timestamp();
+        let ny = Zone::Tz(chrono_tz::America::New_York);
+        assert_eq!(label(ts, Boundary::Minute, Timeframe::M1, ny), "10:24");
+        assert_eq!(crosshair_label(ts, Timeframe::M1, ny), "Tue 24 Nov '26 10:24 EST");
+        assert_eq!(crosshair_label(ts, Timeframe::M1, Zone::Utc), "Tue 24 Nov '26 15:24 UTC");
+        // July is EDT: UTC-4.
+        let summer = DateTime::parse_from_rfc3339("2026-07-24T15:24:00Z").unwrap().timestamp();
+        assert_eq!(crosshair_label(summer, Timeframe::M1, ny), "Fri 24 Jul '26 11:24 EDT");
+        assert_eq!(exchange_zone("AAPL", AssetClass::Equity).abbrev(ts), "EST");
+        assert_eq!(exchange_zone("HSI", AssetClass::Index).abbrev(ts), "HKT");
+        assert_eq!(exchange_zone("KC1", AssetClass::Cmdty).abbrev(ts), "GMT");
+        assert_eq!(exchange_zone("BTCUSD", AssetClass::Crypto), Zone::Utc);
     }
 }

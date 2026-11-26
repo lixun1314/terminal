@@ -46,6 +46,7 @@ fn create_app(
         ));
     }
     let name = provider.name().to_string();
+    tracing::info!("data provider: {name}");
     let worker = worker::Worker::spawn(cc.egui_ctx.clone(), provider)?;
     let info = rs.adapter.get_info();
     tracing::info!("window + GPU ready in {:?} (adapter: {}, backend: {:?})", t0.elapsed(), info.name, info.backend);

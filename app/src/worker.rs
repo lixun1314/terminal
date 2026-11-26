@@ -991,6 +991,7 @@ fn retry_perp(s: Arc<Shared>, pane: PaneId, generation: u64, symbol: String, tf:
 
 fn start_live(s: Arc<Shared>, pane: PaneId, generation: u64, symbol: String, tf: Timeframe, limit: usize) {
     let Some(mut feed) = s.provider.live(&symbol, tf) else { return };
+    tracing::debug!("live start {symbol} {tf}");
     rt::spawn(async move {
         let started = web_time::Instant::now();
         let mut tick = rt::interval(Duration::from_millis(250));

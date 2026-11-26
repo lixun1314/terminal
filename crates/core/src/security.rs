@@ -141,7 +141,12 @@ impl Security {
     pub fn key(&self) -> String {
         match self.class {
             AssetClass::Perp => self.ticker.clone(),
-            AssetClass::Equity | AssetClass::Etf => format!("{} US Equity", self.ticker),
+            AssetClass::Equity | AssetClass::Etf => match self.ticker.rsplit_once('.') {
+                Some((b, "SS")) => format!("{b} SS Equity"),
+                Some((b, "SZ")) => format!("{b} SZ Equity"),
+                Some((b, "HK")) => format!("{b} HK Equity"),
+                _ => format!("{} US Equity", self.ticker),
+            },
             c => format!("{} {}", self.ticker, c.yellow_key().label()),
         }
     }
@@ -166,20 +171,30 @@ impl Security {
         // Optional market/country word (`US`) then a yellow key.
         let mut used = 1;
         let mut key = None;
+        let mut country = None;
         for t in rest.iter().take(2) {
             if let Some(k) = YellowKey::parse(t) {
                 key = Some(k);
                 used += 1;
                 break;
             }
-            if t.eq_ignore_ascii_case("US") {
+            let u = t.to_ascii_uppercase();
+            if matches!(u.as_str(), "US" | "SS" | "SZ" | "HK") {
+                country = Some(u);
                 used += 1;
                 continue;
             }
             break;
         }
-        if key.is_none() && used > 1 {
+        if key.is_none() && used > 1 && country.as_deref() == Some("US") {
             used = 1; // a stray `US` without a yellow key belongs to the next function
+            country = None;
+        }
+        let mut ticker = ticker;
+        if let Some(c) = &country
+            && c != "US"
+        {
+            ticker = format!("{ticker}.{c}");
         }
         Some((Self::classify(&ticker, key), used))
     }
@@ -270,7 +285,8 @@ pub fn looks_like_ticker(s: &str) -> bool {
     !core.is_empty()
         && core.len() <= 14
         && core.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '='))
-        && core.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && (core.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            || ((4..=6).contains(&core.len()) && core.chars().all(|c| c.is_ascii_digit())))
 }
 
 #[cfg(test)]

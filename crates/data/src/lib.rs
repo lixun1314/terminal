@@ -25,6 +25,8 @@
 pub mod alpaca;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cache;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cn;
 pub mod crypto;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod markets;
@@ -33,7 +35,11 @@ pub mod rss;
 pub mod rt;
 pub mod sample;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod tradingview;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod treasury;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tv_live;
 pub mod web;
 /// The websocket client the providers use (the app's Hyperliquid user stream uses it too).
 pub mod ws;
@@ -50,6 +56,8 @@ use tr_core::{AssetClass, Bar, Security, Timeframe, catalog};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use cache::BarCache;
+#[cfg(not(target_arch = "wasm32"))]
+pub use tradingview::TradingView;
 
 /// Latest quote for a symbol.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -61,6 +69,42 @@ pub struct Quote {
     /// Recent daily closes (oldest first) for sparklines; may be empty.
     #[serde(default)]
     pub spark: Vec<f64>,
+    /// Pre/post-market print when the exchange is outside its regular session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<ExtQuote>,
+}
+
+/// Which extended session a print belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExtSession {
+    Pre,
+    Post,
+}
+
+impl ExtSession {
+    /// Short badge (`PRE`, `AH`).
+    pub fn label(self) -> &'static str {
+        match self {
+            ExtSession::Pre => "PRE",
+            ExtSession::Post => "AH",
+        }
+    }
+}
+
+/// A pre/post-market price and its move against the regular session close.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ExtQuote {
+    pub price: f64,
+    pub change: f64,
+    pub change_pct: f64,
+    pub session: ExtSession,
+}
+
+impl ExtQuote {
+    /// Short badge for the session (`PRE`, `AH`).
+    pub fn label(&self) -> &'static str {
+        self.session.label()
+    }
 }
 
 /// A symbol-search result.
@@ -256,7 +300,14 @@ pub trait MarketData: Send + Sync {
             let bars = self.history(s, Timeframe::D1, None, 2).await?;
             if let Some(last) = bars.last() {
                 let prev = if bars.len() > 1 { bars[bars.len() - 2].close } else { last.open };
-                out.push(Quote { symbol: s.clone(), last: last.close, prev_close: prev, ts: last.ts, spark: vec![] });
+                out.push(Quote {
+                    symbol: s.clone(),
+                    last: last.close,
+                    prev_close: prev,
+                    ts: last.ts,
+                    spark: vec![],
+                    ext: None,
+                });
             }
         }
         Ok(out)
@@ -298,6 +349,13 @@ pub trait MarketData: Send + Sync {
         anyhow::bail!("no Terminal server")
     }
 
+    /// Whether quotes can refresh at sub-minute cadence (a realtime session or push feed is
+    /// configured). Callers use this to avoid 1 s polls on sources that only update every
+    /// 10–15 minutes (delayed indices/futures).
+    fn realtime_quotes(&self) -> bool {
+        false
+    }
+
     /// The US Treasury curve. The default assembles it from each tenor's daily history.
     async fn yield_curves(&self) -> Result<YieldCurves> {
         let tenors = catalog::treasury_curve();
@@ -327,17 +385,23 @@ pub trait MarketData: Send + Sync {
 
 pub type Provider = Arc<dyn MarketData>;
 
-/// Serves from `primary`, falling back to sample data on error.
+/// Serves from `primary`, optionally falling back to sample data on error. The silent
+/// fallback is **off by default**: synthetic bars must never be cached as if they were real
+/// (that mixes price regimes into the chart and the SQLite cache). Set
+/// `TR_SAMPLE_FALLBACK=1` to enable it, or use `TR_PROVIDER=sample` for a fully offline run.
 pub struct Fallback<P> {
     primary: P,
     sample: sample::SampleProvider,
+    sample_fallback: bool,
     name: String,
 }
 
 impl<P: MarketData> Fallback<P> {
     pub fn new(primary: P) -> Self {
         let name = primary.name().to_string();
-        Self { primary, sample: sample::SampleProvider::default(), name }
+        let sample_fallback =
+            std::env::var("TR_SAMPLE_FALLBACK").is_ok_and(|v| matches!(v.trim(), "1" | "true" | "on"));
+        Self { primary, sample: sample::SampleProvider::default(), sample_fallback, name }
     }
 }
 
@@ -347,11 +411,16 @@ impl<P: MarketData> MarketData for Fallback<P> {
         &self.name
     }
 
+    fn realtime_quotes(&self) -> bool {
+        self.primary.realtime_quotes()
+    }
+
     async fn history(&self, symbol: &str, tf: Timeframe, end: Option<i64>, limit: usize) -> Result<Vec<Bar>> {
         match self.primary.history(symbol, tf, end, limit).await {
             Ok(b) => Ok(b),
             // Paging older history: never splice sample bars onto real ones. Perps never get them.
-            Err(e) if end.is_some() || is_perp(symbol) => Err(e),
+            // The silent sample fallback is opt-in so synthetic bars never poison the cache.
+            Err(e) if end.is_some() || is_perp(symbol) || !self.sample_fallback => Err(e),
             Err(e) => {
                 tracing::warn!("{} history {symbol} {tf} failed, using sample data: {e:#}", self.name);
                 self.sample.history(symbol, tf, end, limit).await
@@ -367,11 +436,12 @@ impl<P: MarketData> MarketData for Fallback<P> {
             Ok(mut q) => {
                 let missing: Vec<String> =
                     symbols.iter().filter(|s| !is_perp(s) && !q.iter().any(|x| &x.symbol == *s)).cloned().collect();
-                if !missing.is_empty() && q.is_empty() {
+                if self.sample_fallback && !missing.is_empty() && q.is_empty() {
                     q.extend(self.sample.quotes(&missing).await.unwrap_or_default());
                 }
                 Ok(q)
             }
+            Err(e) if !self.sample_fallback => Err(e),
             Err(e) => {
                 tracing::warn!("{} quotes failed, using sample data: {e:#}", self.name);
                 let listed: Vec<String> = symbols.iter().filter(|s| !is_perp(s)).cloned().collect();
@@ -438,6 +508,83 @@ impl<P: MarketData> MarketData for Fallback<P> {
 /// Resolve a market key or bare ticker.
 pub fn security(symbol: &str) -> Security {
     Security::parse(symbol).unwrap_or_else(|| Security::equity(symbol))
+}
+
+/// The data-source preference: `TR_SOURCE` env, else the first line of
+/// `<data dir>/source.txt` (written by Settings › Panels › Data source).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SourcePref {
+    Auto,
+    Yahoo,
+    Tv,
+    Alpaca,
+}
+
+pub fn source_pref() -> SourcePref {
+    let v = std::env::var("TR_SOURCE").ok().or_else(|| {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            tr_core::http::config_line("source.txt")
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
+    });
+    match v.as_deref().map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("yahoo") => SourcePref::Yahoo,
+        Some("tv") | Some("tradingview") => SourcePref::Tv,
+        Some("alpaca") => SourcePref::Alpaca,
+        _ => SourcePref::Auto,
+    }
+}
+
+/// Whether the configured source can produce per-second quotes right now.
+pub fn fast_quote_source() -> bool {
+    match source_pref() {
+        SourcePref::Alpaca => std::env::var("APCA_API_KEY_ID").is_ok() && std::env::var("APCA_API_SECRET_KEY").is_ok(),
+        SourcePref::Yahoo => false,
+        _ => {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                crate::tradingview::session_cookie().is_some()
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                false
+            }
+        }
+    }
+}
+
+/// A short label for the chart status row: which live source will drive this pane.
+pub fn live_source_hint(sec: &Security, tf: Timeframe) -> &'static str {
+    if sec.class == AssetClass::Crypto {
+        return "Binance ws";
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if crate::cn::is_cn(sec) {
+            return "Tencent 3s";
+        }
+        if crate::source_pref() == crate::SourcePref::Alpaca
+            && matches!(sec.class, AssetClass::Equity | AssetClass::Etf)
+        {
+            return "Alpaca ws";
+        }
+        if crate::tv_live::push_enabled() && crate::tv_live::eligible(sec) {
+            return "TV push";
+        }
+    }
+    if matches!(
+        sec.class,
+        AssetClass::Equity | AssetClass::Etf | AssetClass::Fx | AssetClass::Index | AssetClass::Cmdty
+    ) || (sec.class == AssetClass::Govt && tf.is_intraday())
+    {
+        "Yahoo poll"
+    } else {
+        "static"
+    }
 }
 
 /// Whether `symbol` is a HIP-3 perp (`xyz:AAPL`).
@@ -561,6 +708,11 @@ mod tests {
     #[tokio::test]
     async fn fallback_serves_sample_data() {
         let p = Fallback::new(Broken);
+        // Synthetic bars must not be served silently: they would be cached as if real.
+        assert!(p.history("AAPL", Timeframe::D1, None, 100).await.is_err());
+        assert!(p.quotes(&["AAPL".into()]).await.is_err());
+        // The explicit opt-in still serves them.
+        let p = Fallback { sample_fallback: true, ..Fallback::new(Broken) };
         let bars = p.history("AAPL", Timeframe::D1, None, 100).await.unwrap();
         assert_eq!(bars.len(), 100);
         let q = p.quotes(&["AAPL".into()]).await.unwrap();
@@ -578,6 +730,8 @@ mod tests {
         let p = Fallback::new(Broken);
         assert!(p.history("xyz:AAPL", Timeframe::D1, None, 10).await.is_err());
         assert!(p.order_book("xyz:AAPL", 10).await.is_err());
+        assert!(p.quotes(&["xyz:AAPL".into()]).await.is_err());
+        let p = Fallback { sample_fallback: true, ..Fallback::new(Broken) };
         let q = p.quotes(&["xyz:AAPL".into(), "AAPL US Equity".into()]).await.unwrap();
         assert_eq!(q.iter().map(|q| q.symbol.as_str()).collect::<Vec<_>>(), ["AAPL US Equity"]);
         let s = sample::SampleProvider::default().with_live_ticks();
@@ -617,7 +771,7 @@ mod tests {
 
     #[test]
     fn quote_change() {
-        let q = Quote { symbol: "X".into(), last: 110.0, prev_close: 100.0, ts: 0, spark: vec![] };
+        let q = Quote { symbol: "X".into(), last: 110.0, prev_close: 100.0, ts: 0, spark: vec![], ext: None };
         assert_eq!(q.change(), 10.0);
         assert!((q.change_pct() - 10.0).abs() < 1e-9);
     }

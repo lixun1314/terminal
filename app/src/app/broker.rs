@@ -829,8 +829,14 @@ mod tests {
     /// and testnet updates arriving interleaved: each reads only its own network's price.
     #[test]
     fn testnet_rows_never_read_mainnet_quotes() {
-        let quote =
-            |last: f64| tr_data::Quote { symbol: "xyz:AAPL".into(), last, prev_close: last, ts: 0, spark: Vec::new() };
+        let quote = |last: f64| tr_data::Quote {
+            symbol: "xyz:AAPL".into(),
+            last,
+            prev_close: last,
+            ts: 0,
+            spark: Vec::new(),
+            ext: None,
+        };
         let row = |account: &str| Position {
             account_id: account.into(),
             symbol: "xyz:AAPL".into(),

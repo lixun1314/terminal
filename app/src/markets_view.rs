@@ -62,7 +62,11 @@ fn row(ui: &mut Ui, l: &Listing, quotes: &HashMap<String, Quote>, out: &mut Vec<
     let p = ui.painter_at(rect);
     let y = rect.center().y;
     let x = rect.left() + 2.0;
-    p.text(pos2(x, y), Align2::LEFT_CENTER, l.ticker, mono(12.0), amber());
+    let tick = p.layout_no_wrap(l.ticker.to_string(), mono(12.0), amber());
+    p.galley(pos2(x, y - tick.size().y / 2.0), tick.clone(), amber());
+    if let Some(e) = q.and_then(|q| q.ext) {
+        p.text(pos2(x + tick.size().x + 4.0, y), Align2::LEFT_CENTER, e.label(), mono(9.5), amber_dim());
+    }
     let right = rect.right() - 2.0;
     // Narrow columns drop the net change, then the sparkline, then the name.
     let compact = width < 330.0;
@@ -70,15 +74,30 @@ fn row(ui: &mut Ui, l: &Listing, quotes: &HashMap<String, Quote>, out: &mut Vec<
     let mut name_right = last_right - 92.0;
     match q {
         Some(q) => {
-            let c = if q.change() >= 0.0 { theme::up() } else { theme::down() };
-            let d = sec.decimals(q.last);
-            let pct =
-                if sec.class == AssetClass::Govt { change_text(&sec, q) } else { format!("{:+.2}%", q.change_pct()) };
+            // Extended hours: show the pre/post print instead of the regular close.
+            let (last, chg, pct, up) = match q.ext {
+                Some(e) => (e.price, e.change, e.change_pct, e.change >= 0.0),
+                None => (q.last, q.change(), q.change_pct(), q.change() >= 0.0),
+            };
+            let c = if up { theme::up() } else { theme::down() };
+            let d = sec.decimals(last);
+            let pct = if sec.class == AssetClass::Govt { change_text(&sec, q) } else { format!("{pct:+.2}%") };
             p.text(pos2(right, y), Align2::RIGHT_CENTER, pct, mono(12.0), c);
             if !compact {
-                p.text(pos2(right - 66.0, y), Align2::RIGHT_CENTER, change_text(&sec, q), mono(12.0), c);
+                let chg = if q.ext.is_some() { format!("{chg:+.2}") } else { change_text(&sec, q) };
+                p.text(pos2(right - 66.0, y), Align2::RIGHT_CENTER, chg, mono(12.0), c);
             }
-            p.text(pos2(last_right, y), Align2::RIGHT_CENTER, format!("{:.d$}", q.last), mono(12.0), text());
+            p.text(pos2(last_right, y), Align2::RIGHT_CENTER, format!("{:.d$}", last), mono(12.0), text());
+            if let Some(e) = q.ext {
+                resp.clone().on_hover_text(format!(
+                    "Regular {:.d$} ({:+.2}%) · {} {:.d$} ({:+.2}%)",
+                    q.last,
+                    q.change_pct(),
+                    e.label(),
+                    e.price,
+                    e.change_pct
+                ));
+            }
             let spark = Rect::from_min_size(pos2(name_right - 52.0, rect.top() + 3.0), vec2(48.0, h - 6.0));
             if spark.left() > rect.left() + 180.0 {
                 sparkline(ui, spark, &q.spark, c);
@@ -374,9 +393,10 @@ mod tests {
 
     #[test]
     fn change_formatting() {
-        let q = Quote { symbol: "US10Y Govt".into(), last: 4.25, prev_close: 4.22, ts: 0, spark: vec![] };
+        let q = Quote { symbol: "US10Y Govt".into(), last: 4.25, prev_close: 4.22, ts: 0, spark: vec![], ext: None };
         assert_eq!(change_text(&Security::parse("US10Y Govt").unwrap(), &q), "+3.0bp");
-        let q = Quote { symbol: "EURUSD Curncy".into(), last: 1.0912, prev_close: 1.0900, ts: 0, spark: vec![] };
+        let q =
+            Quote { symbol: "EURUSD Curncy".into(), last: 1.0912, prev_close: 1.0900, ts: 0, spark: vec![], ext: None };
         assert_eq!(change_text(&Security::parse("EURUSD Curncy").unwrap(), &q), "+0.0012");
     }
 

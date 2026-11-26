@@ -571,7 +571,17 @@ impl ChartState {
         clicked
     }
 
-    pub fn show(&mut self, ui: &mut Ui, rect: Rect, focused: bool, w: &Worker) -> bool {
+    /// The chart timezone the preference asks for, resolved against the security.
+    /// The chart timezone the preference asks for, resolved against this security.
+    pub fn zone(&self, pref: crate::prefs::ChartTz) -> tr_chart::scale::Zone {
+        match pref {
+            crate::prefs::ChartTz::Exchange => tr_chart::scale::exchange_zone(&self.sec.ticker, self.sec.class),
+            crate::prefs::ChartTz::Local => tr_chart::scale::Zone::Local,
+            crate::prefs::ChartTz::Utc => tr_chart::scale::Zone::Utc,
+        }
+    }
+
+    pub fn show(&mut self, ui: &mut Ui, rect: Rect, focused: bool, w: &Worker, zone: scale::Zone) -> bool {
         let painter = ui.painter_at(rect);
         // Sits under a tab strip inside a card: square top, rounded bottom.
         let r = theme::CARD_RADIUS.saturating_sub(1);
@@ -650,7 +660,7 @@ impl ChartState {
         let status = painter.text(
             pos2(range_row.right() - 6.0, range_row.center().y),
             Align2::RIGHT_CENTER,
-            self.status_text(),
+            format!("{} · {}", self.status_text(), tr_data::live_source_hint(&self.sec, self.tf)),
             mono(10.5),
             status_color,
         );
@@ -921,7 +931,7 @@ impl ChartState {
             let idxs: Vec<usize> = (lo..hi).step_by(stride).collect();
             let times: Vec<i64> = idxs.iter().map(|&i| self.bars[i].ts).collect();
             let gap = 90.0 / (v.bar_px * stride as f64);
-            for (j, label) in scale::time_ticks(&times, 0, times.len(), gap, self.tf) {
+            for (j, label) in scale::time_ticks(&times, 0, times.len(), gap, self.tf, zone) {
                 let x = price_rect.left() + v.x_center(idxs[j]) as f32;
                 ui.painter_at(plot_all).vline(x, plot_all.y_range(), Stroke::new(1.0, theme::grid()));
                 time_painter.text(
@@ -933,6 +943,15 @@ impl ChartState {
                 );
             }
         }
+        // Which timezone the axis is in, so `15:24` can't be mistaken for exchange time.
+        let stamp = self.bars.last().map_or_else(|| chrono::Utc::now().timestamp(), |b| b.ts);
+        time_painter.text(
+            pos2(time_rect.right() - 4.0, time_rect.center().y),
+            Align2::RIGHT_CENTER,
+            zone.abbrev(stamp),
+            mono(10.0),
+            muted(),
+        );
 
         // Last price line + axis tag, fading in as the sweep reaches the last bar.
         let tag_fade = crate::anim::span(reveal_t, 0.8, 1.0);
@@ -994,7 +1013,7 @@ impl ChartState {
                 );
             }
             if let Some(i) = hovered_bar {
-                let label = scale::crosshair_label(self.bars[i].ts, self.tf);
+                let label = scale::crosshair_label(self.bars[i].ts, self.tf, zone);
                 let gw = label.len() as f32 * 7.0 + 10.0;
                 let tag = Rect::from_center_size(pos2(xi, time_rect.center().y), vec2(gw, TIME_H));
                 time_painter.rect_filled(tag, 0.0, tag_fill);

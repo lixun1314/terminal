@@ -40,7 +40,16 @@ impl YahooProvider {
     async fn get_text(&self, what: &str, url: &str, query: &[(&str, String)]) -> Result<String> {
         let mut backoff = Duration::from_secs(1);
         for attempt in 0..3 {
-            let resp = self.client.get(url).query(query).send().await?;
+            let resp = match self.client.get(url).query(query).send().await {
+                Ok(r) => r,
+                // Connection resets from Yahoo's edge are common: retry the transport.
+                Err(_e) if attempt < 2 => {
+                    crate::rt::sleep(backoff).await;
+                    backoff *= 2;
+                    continue;
+                }
+                Err(e) => return Err(e).with_context(|| format!("yahoo {what}")),
+            };
             let status = resp.status();
             if status.is_success() {
                 return Ok(resp.text().await?);
@@ -57,7 +66,7 @@ impl YahooProvider {
                     "yahoo {what}: blocked from mainland China; set TR_PROXY or write a proxy URL to proxy.txt in the data directory"
                 );
             }
-            if matches!(status.as_u16(), 429 | 503) && attempt < 2 {
+            if matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504) && attempt < 2 {
                 crate::rt::sleep(retry_after.unwrap_or(backoff).min(Duration::from_secs(10))).await;
                 backoff *= 2;
                 continue;
@@ -436,7 +445,7 @@ pub fn parse_spark(json: &str) -> Result<Vec<Quote>> {
         let prev =
             if closes.len() >= 2 { closes[closes.len() - 2] } else { d["chartPreviousClose"].as_f64().unwrap_or(last) };
         let ts = d["timestamp"].as_array().and_then(|a| a.last()).and_then(|t| t.as_i64()).unwrap_or_default();
-        out.push(Quote { symbol: sym.clone(), last, prev_close: prev, ts, spark: closes });
+        out.push(Quote { symbol: sym.clone(), last, prev_close: prev, ts, spark: closes, ext: None });
     }
     Ok(out)
 }

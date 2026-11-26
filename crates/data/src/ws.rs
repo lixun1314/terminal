@@ -33,7 +33,7 @@ impl Socket {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use anyhow::{Context, Result};
+    use anyhow::{Context, Result, bail};
     use futures::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message as WsMessage;
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -44,7 +44,54 @@ mod native {
 
     impl Socket {
         pub async fn connect(url: &str) -> Result<Self> {
-            let (ws, _) = tokio_tungstenite::connect_async(url).await.with_context(|| format!("websocket {url}"))?;
+            Self::connect_with_headers(url, &[]).await
+        }
+
+        /// Connect with extra request headers (TradingView requires `Origin`, and a session
+        /// `Cookie` unlocks realtime entitlements). Uses the configured HTTP proxy as a
+        /// CONNECT tunnel when one is set: the websocket stack does not read OS proxy settings.
+        pub async fn connect_with_headers(url: &str, headers: &[(&str, &str)]) -> Result<Self> {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+            use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
+            let mut req = url.into_client_request().with_context(|| format!("websocket {url}"))?;
+            for (k, v) in headers {
+                req.headers_mut().insert(
+                    HeaderName::from_bytes(k.as_bytes()).with_context(|| format!("header name {k}"))?,
+                    HeaderValue::from_str(v).with_context(|| format!("header value {k}"))?,
+                );
+            }
+            let host = req.uri().host().unwrap_or_default().to_string();
+            let port = req.uri().port_u16().unwrap_or(443);
+            // HTTP CONNECT tunnel through the configured proxy, when there is one.
+            if let Some(p) = tr_core::http::proxy_url()
+                && let Ok(proxy) = reqwest::Url::parse(&p)
+                && proxy.scheme().starts_with("http")
+            {
+                let phost = proxy.host_str().unwrap_or("127.0.0.1").to_string();
+                let pport = proxy.port().unwrap_or(8080);
+                let mut tcp = tokio::net::TcpStream::connect((phost.as_str(), pport))
+                    .await
+                    .with_context(|| format!("proxy {phost}:{pport}"))?;
+                let reqline = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n");
+                tcp.write_all(reqline.as_bytes()).await?;
+                let mut buf = Vec::new();
+                let mut byte = [0u8; 1];
+                while !buf.ends_with(b"\r\n\r\n") && buf.len() < 8192 {
+                    if tcp.read(&mut byte).await? == 0 {
+                        break;
+                    }
+                    buf.push(byte[0]);
+                }
+                if !buf.starts_with(b"HTTP/1.1 200") {
+                    bail!("proxy CONNECT {host}:{port} rejected");
+                }
+                let (ws, _) = tokio_tungstenite::client_async_tls_with_config(req, tcp, None, None)
+                    .await
+                    .with_context(|| format!("websocket {url} via proxy"))?;
+                return Ok(Self(ws));
+            }
+            let (ws, _) = tokio_tungstenite::connect_async(req).await.with_context(|| format!("websocket {url}"))?;
             Ok(Self(ws))
         }
 

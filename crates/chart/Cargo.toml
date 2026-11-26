@@ -11,6 +11,7 @@ egui = { version = "0.36", default-features = false }
 egui-wgpu = { version = "0.36", default-features = false }
 bytemuck = { version = "1", features = ["derive"] }
 chrono.workspace = true
+chrono-tz.workspace = true
 serde.workspace = true
 pollster = "0.4"
 
